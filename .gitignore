@@ -74,11 +74,11 @@ yarn-debug.log*
 yarn-error.log*
 
 # Frontend
-frontend/tailor-tom-front/.next/
-frontend/tailor-tom-front/out/
-frontend/tailor-tom-front/.vercel/
-frontend/tailor-tom-front/node_modules/
-frontend/tailor-tom-front/.env*.local
+frontend/.next/
+frontend/out/
+frontend/.vercel/
+frontend/node_modules/
+frontend/.env*.local
 
 # Docker
 *.dockerignore
