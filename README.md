@@ -125,7 +125,7 @@ The API will be available at `http://localhost:8000`
 
 1. Navigate to the frontend directory:
 ```bash
-cd frontend/tailor-tom-front
+cd frontend
 ```
 
 2. Install dependencies:
@@ -182,7 +182,7 @@ These settings are configured in the Settings page and sent with each job reques
 
 1. Push your code to GitHub
 2. Import your repository in [Vercel](https://vercel.com)
-3. Set the root directory to `frontend/tailor-tom-front`
+3. Set the root directory to `frontend`
 4. Add environment variable:
    - `NEXT_PUBLIC_API_URL`: Your Render backend URL
 5. Deploy!
@@ -304,10 +304,9 @@ TailorTom/
 │   │   └── diff_utils.py     # Diff computation and PDF highlighting
 │   ├── Dockerfile            # Docker configuration for Render
 │   └── requirements.txt      # Python dependencies
-├── frontend/
-│   └── tailor-tom-front/     # Next.js application
-│       ├── app/              # Next.js app router pages
-│       ├── components/       # React components
+├── frontend/                 # Next.js application
+│   ├── app/                  # Next.js app router pages
+│   ├── components/           # React components
 │       │   ├── jobs/        # Job-related components
 │       │   ├── diff/        # Diff visualization components
 │       │   ├── editor/      # LaTeX editor component
