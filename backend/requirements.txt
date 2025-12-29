@@ -1,0 +1,21 @@
+# TailorTom Backend Dependencies
+dspy>=3.0.0b4
+openai>=1.0
+PyPDF2>=3.0
+pymupdf>=1.24  # For PDF annotation and text extraction
+python-dotenv>=1.0
+pydantic>=2.0
+pydantic-settings>=2.0
+jupyter
+ipywidgets
+pdf2image>=1.16  # For visual PDF comparison (requires poppler: brew install poppler)
+
+# FastAPI dependencies
+fastapi>=0.100.0
+uvicorn>=0.23.0
+python-multipart>=0.0.6
+
+# Celery and Redis dependencies
+celery>=5.3.0
+redis>=5.0.0
+kombu>=5.3.0

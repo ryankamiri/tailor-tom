@@ -1,0 +1,278 @@
+\documentclass{article}
+\usepackage[cm]{fullpage}
+\usepackage{color}
+\usepackage{hyperref}
+\usepackage[margin=0.5in]{geometry}
+\usepackage{fontawesome}
+
+\hypersetup{breaklinks=false,%
+colorlinks=true,%
+linkcolor=MyDarkBlue,%
+urlcolor=MyDarkBlue}
+
+\definecolor{MyDarkBlue}{rgb}{0,0.0,0.45}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Formatting parameters  %
+%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\newlength{\tabin}
+\setlength{\tabin}{1em}
+\newlength{\secsep}
+\setlength{\secsep}{0.1cm}
+
+\setlength{\parindent}{0in}
+\setlength{\parskip}{0in}
+\setlength{\itemsep}{0in}
+\setlength{\topsep}{0in}
+\setlength{\tabcolsep}{0in}
+
+\definecolor{contactgray}{gray}{0.3}
+\pagestyle{empty}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%
+%  Template Definitions  %
+%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\newcommand{\lineunder}{\vspace*{-8pt} \\ \hspace*{-6pt} \hrulefill \\ \vspace*{-15pt}}
+\newcommand{\name}[1]{\begin{center}\textsc{\Huge#1}\\\end{center}}
+\newcommand{\program}[1]{\begin{center}\textsc{#1}\end{center}}
+\newcommand{\contact}[1]{\begin{center}\color{contactgray}{\small#1}\end{center}}
+
+\newenvironment{tabbedsection}[1]{
+  \begin{list}{}{
+      \setlength{\itemsep}{0pt}
+      \setlength{\labelsep}{0pt}
+      \setlength{\labelwidth}{0pt}
+      \setlength{\leftmargin}{\tabin}
+      \setlength{\rightmargin}{\tabin}
+      \setlength{\listparindent}{0pt}
+      \setlength{\parsep}{0pt}
+      \setlength{\parskip}{0pt}
+      \setlength{\partopsep}{0pt}
+      \setlength{\topsep}{#1}
+    }
+  \item[]
+}{\end{list}}
+
+\newenvironment{nospacetabbing}{
+    \begin{tabbing}
+}{\end{tabbing}\vspace{-1.2em}}
+
+\newenvironment{resume_header}{}{\vspace{0pt}}
+
+
+\newenvironment{resume_section}[1]{
+  \filbreak
+  \vspace{2\secsep}
+  \textsc{\large#1}
+  \lineunder
+  \begin{tabbedsection}{\secsep}
+}{\end{tabbedsection}}
+
+\newenvironment{resume_subsection}[2][]{
+  \textbf{#2} \hfill {\footnotesize #1} \hspace{-3em}
+  \begin{tabbedsection}{0.5\secsep}
+}{\end{tabbedsection}}
+
+\newenvironment{subitems}{
+  \renewcommand{\labelitemi}{-}
+  \begin{itemize}
+      \setlength{\labelsep}{1em}
+      \fontsize{10.4pt}{11pt}\selectfont
+}{\end{itemize}}
+
+\newenvironment{resume_employer}[4]{
+  \vspace{\secsep}
+  \textbf{#1} \\ 
+  \indent {\small #2} \hfill {\footnotesize#3 (#4)}
+  \begin{tabbedsection}{0pt}
+  \begin{subitems}
+}{\end{subitems}\end{tabbedsection}}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%
+%     Start Document     %
+%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\begin{document}
+
+\begin{resume_header}
+\name{Ryan Amiri}
+\contact{\href{mailto:ryanamiri05@gmail.com}{ryanamiri05@gmail.com} \hspace{.5cm} \href{tel:17149060509}{714-906-0509} \hspace{.5cm} \href{https://www.linkedin.com/in/ryanamiri}{linkedin.com/in/ryanamiri} \hspace{.5cm} \href{https://www.github.com/ryankamiri}{github.com/ryankamiri}}
+\end{resume_header}
+
+\begin{resume_section}{Education}
+  \begin{resume_subsection}[Boston, MA (Expected Graduation May 2027)]{Northeastern University}
+    % {\hspace{-1.3em} \footnotesize Khoury College of Computer Sciences 3.95/4.0 GPA}
+    \begin{subitems}
+        \item 3.95/4.0 GPA | Candidate for Bachelor of Science in Computer Science
+        \item Relevant Coursework: Machine Learning, Object-Oriented Design, Algorithms and Data Structures, Database Design, Calculus 3, Linear Algebra, Differential Equations, Discrete Mathematics, and Computer Systems
+    \end{subitems}
+  \end{resume_subsection}
+\end{resume_section}
+
+\begin{resume_section}{Work Experience}
+
+    \begin{resume_subsection}[Cambridge, MA (Sept 2025 -- Dec 2025)]{HubSpot $|$ Machine Learning Engineer Intern}
+        \begin{subitems}
+            \item Designed and led HubSpot’s first production \textbf{LLM-as-judge} evaluation pipeline for tools, raising tool-call task success from \textbf{40\%} to \textbf{90\%} for \textbf{2,391}+ daily AI agent users
+            \item Deployed the grader as \textbf{Kubernetes} jobs in a governed \textbf{MLOps} workflow that gates every new or updated tool and acts as the standard quality bar across Custom Agent Creator, AI Agent Studio, and Breeze AI
+            \item Curated tool-quality datasets in \textbf{Snowflake} using SQL and \textbf{pandas}, and used \textbf{DSPy} to optimize \textbf{OpenAI GPT-5} LLM-as-judge prompts for calibrated pass/fail labels, rationales, and actionable feedback to tool authors
+        \end{subitems}
+    \end{resume_subsection}
+
+    \begin{resume_subsection}[Boston, MA (Sept 2025 -- present)]{Northeastern University $|$ Research Assistant}
+        \begin{subitems}
+            \item NeurIPS 2025 research on \textit{LLM Collaboration with Multi-Agent Reinforcement Learning}, modeling \textbf{SWE-bench} bug fixing as a multi-agent reinforcement learning (MARL) problem with collaborating LLM code agents
+            \item Implemented \textbf{MAGRPO} (from \textbf{GRPO}) in \textbf{PyTorch} and built a SWE-bench pipeline with patch application, tests, group-relative rewards, and \textbf{Weights \& Biases} logging
+            \item Showed MAGRPO-based collaborating agents achieve \textbf{34\%} higher task success than a single-agent GRPO baseline on held-out SWE-bench code-fixing tasks
+            \item Maintain the SWE module in the \textbf{open-source} \href{https://github.com/OpenMLRL}{CoMLRL} MARL library, contributing reusable MAGRPO components and benchmarks for LLM collaboration work
+        \end{subitems}
+    \end{resume_subsection}
+
+    \begin{resume_subsection}[Cambridge, MA (July 2025 - Dec 2025)]{HubSpot $|$ Software Engineer Intern}
+        \begin{subitems}
+    \item Owned development of the \textit{Data Model Intro} page, an LLM-powered onboarding surface for configuring custom objects and data models, now serving \textbf{10,591} daily users and improving data-modeling CSAT by \textbf{20\%}
+    \item Built the front end in \textbf{React} + \textbf{TypeScript} with \textbf{Apollo Client} and \textbf{GraphQL}, integrating AI recommendations and natural-language template generation via cached backend calls and robust loading/error states
+    \item Collaborated with backend engineers and UX through customer interviews to support AI data-model features
+  \end{subitems}
+    \end{resume_subsection}
+
+    \begin{resume_subsection}[Remote (May 2024 - June 2024)]{Verizon $|$ Data Analyst Intern}
+        \begin{subitems}
+            % \item Initiated a team of 4 to build a Large Language Model (LLM) using \textbf{Python}, \textbf{PyTorch}, and \textbf{HDBScan} to perform cluster and sentiment analysis on 26k Verizon customer feedback entries
+            \item Led a team of 4 to develop a Large Language Model (LLM) utilizing \textbf{Python}, \textbf{PyTorch}, and \textbf{HDBScan} to conduct AI-driven cluster and sentiment analysis on 26k Verizon customer feedback entries
+            \item Identified 15 clusters of customer complaints, revealing unknown pain points related to service disruptions
+            % \item Collaborated with cross-functional teams to present insights and data visualizations to stakeholders, recommending solutions that reduced complaints and improved customer satisfaction
+        \end{subitems}
+    \end{resume_subsection}
+
+  %   \begin{resume_subsection}[Dana Point, CA (August 2023 - present)]{Strand Media Partners $|$ Data Analyst}
+  %   \begin{subitems}
+  %       \item Doubled company's order requests by innovating \textbf{Python} scripts to automate orders according to client data
+  %       \item Led team in automating email sends with \textbf{Python} algorithms, increasing client reach by 60\%
+  %   \end{subitems}
+  % \end{resume_subsection}
+
+  % \begin{resume_subsection}[Berkeley, CA (August 2023 - present)]{Shop Spero $|$ Web Developer}
+  %   \begin{subitems}
+  %       \item Integrated Stripe API with \textbf{React} and \textbf{NextJS} to automate payment processes, optimizing transactions
+  %       \item Redesigned and improved the website's UI/UX with Tailwind, optimizing user experience for the clothing brand
+  %   \end{subitems}
+  % \end{resume_subsection}
+  
+  %   \begin{resume_subsection}[Santa Fe Springs, CA (June 2022 - July 2022)]{Auto Motive Power (AMP) $|$ Software Engineering Intern}
+  %   \begin{subitems}
+  %       \item Built \textbf{Python} scripts to access supplier APIs, identify hardware and replacements, and solve supply-chain issues
+  %       % \item Upgraded data management by programming software to communicate inventory between different services
+  %       \item Revamped data management by engineering software to automate inventory communication between services
+  %       \item Increased AMP's profitability by 25\% (finding more usable supply) and increased work productivity by 50\%
+  %   \end{subitems}
+  % \end{resume_subsection}
+    
+  %   \begin{resume_subsection}[Remote (March 2020 - July 2021)]{Zen Tech $|$ CEO}
+  %   \begin{subitems}
+  %       \item Founded an online business with 300+ subscriptions selling bots to assist Roblox users with market purchases
+  %       \item Streamlined an API wrapper in \textbf{Python} to interact with Roblox's API in buying, getting prices, and selling
+  %       \item Used \textbf{MySQL} to store user information and save sessions; Used \textbf{AWS EC2} to host
+  %   \end{subitems}
+  % \end{resume_subsection}
+\end{resume_section}
+
+
+\begin{resume_section}{Personal Projects and Competitions}
+
+    \begin{resume_subsection}[(February 2025)]{\href{https://devpost.com/software/zenposture}{NYU: HackNYU 2025} (1st of 600+ teams)}
+    \begin{subitems}
+        \item 1st in Health \& Lifestyle as a team of 3, drove a real-time desktop posture coach that improved posture by 50\%
+        \item Owned the ML system, transformed BlazePose keypoints into 7 geometry-derived features (e.g nose–shoulder ratio) and trained a \textbf{TensorFlow} MLP to produce a 0-100 posture score, 90\% val accuracy with 0.05 val loss
+        \item Directed data collection and labeling, captured and annotated hundreds of photos of fellow participants and I across diverse poses and angles, normalized keypoints and exported CSVs for repeatable training and evaluation
+    \end{subitems}
+    \end{resume_subsection}
+    % \faExternalLinkSquare
+    \begin{resume_subsection}[(October 2024)]{\href{https://devpost.com/software/openlegislation}{Harvard University: HackHarvard 2024} (1st of 600+ teams)}
+        \begin{subitems}
+            \item 1st place with \textbf{React}, \textbf{Express}, and \textbf{MongoDB} to aggregate open-source congressional data on current bills
+            \item Employed a Large Language Model to interpret bills, simplifying legal complexities in congressional bill analysis
+            \item Applied Transformer embeddings and vector search to enable users to perform semantic searches of bills
+        \end{subitems}
+    \end{resume_subsection}
+    
+    \begin{resume_subsection}[(November 2023)]{\href{https://devpost.com/software/project-aphrodite}{Stanford University: Immerse The Bay Hackathon} (top 0.3\%  of 300+ teams)}
+    \begin{subitems}
+        \item Spearheaded a team of 3 to innovate a Shopify-integrated platform in \textbf{React} that allows users to create and render custom-made clothing; used Agile development and tailored app to client's needs
+        \item Acquired by Khattoi, a fashion clothing company with 3,000+ users, where the platform is integrated
+        % \item Platform connects with Shopify's backend, allowing users to checkout their custom-made clothing
+    \end{subitems}
+    \end{resume_subsection}
+
+    % \begin{resume_subsection}[(July 2022)]{Uber Global Hackathon (top 0.8\%  of 1,800+ competitors)}
+    % \begin{subitems}
+    %     \item Engineered a \textbf{Transformer} LLM model using \textbf{PyTorch} to perform sentiment analysis on stock news headlines
+    %     \item Reached 91\% validation accuracy with 6\% false negatives; architecture inspired by Google's \textbf{BERT} model
+    %     \item Used \textbf{Python} to create a web crawler that scraped past news headlines and stock performance for training data
+    %     % \item Designed a website using \textbf{React} and \textbf{Express} in \textbf{NodeJS} to serve the model for users 
+    % \end{subitems}
+    % \end{resume_subsection}
+
+    % \begin{resume_subsection}[(March 2024)]{\href{https://devpost.com/software/lectura}{PawHacks \faExternalLinkSquare}(3rd overall of 150+ competitors)}
+    % \begin{subitems}
+    %     \item Directed a team of 4 to create a \textbf{React/Express/MongoDB} web app for improving classroom engagement
+    %     \item Implemented \textbf{Websockets} for real-time instructor polling during lectures
+    %     \item Enabled students to ask questions via the web app, with instructors rewarding insightful questions using a points system to incentivize participation in large classes
+    % \end{subitems}
+    % \end{resume_subsection}
+    
+    % \begin{resume_subsection}[(August 2019 - December 2022)]{CyberPatriot (National Semifinalist, top 7.5\% in the nation)}
+    % \begin{subitems}
+    %     \item Organization sponsored by Northrop Grumman hosting competitions to secure vulnerable devices
+    %     \item Responsible for leading Windows 10, Windows Server, and developing programs to enhance my team of 7 people
+    %     \item Built \textbf{Python} scripts for my team that would auto-apply registry and group policy settings to secure devices
+    % \end{subitems}
+    % \end{resume_subsection}
+    
+    % \begin{resume_subsection}[(January 2021)]{Kronos (used by 1,000+ users)}
+    % \begin{subitems}
+    %     \item Created a program using \textbf{Python} that simulates a Fortnite tournament by parsing replay files
+    %     \item Integrated with \textbf{Discord} to give teams a score to simulate a real tournament, allowing players to improve
+    % \end{subitems}
+    % \end{resume_subsection}
+    
+    % \begin{resume_subsection}[(December 2021)]{RBXSwap (1,000+ page views)}
+    % \begin{subitems}
+    %     \item Developed a website using \textbf{React} and \textbf{Express} to improve/automate trade of Roblox items in the marketplace
+    %     \item Users can interact with the website to quickly find trades instead of manually spending hours looking for trades 
+    %     \item Used \textbf{MongoDB} to store trades that users can make, past trades, and current inventory of items
+    % \end{subitems}
+    % \end{resume_subsection}
+
+    % \begin{resume_subsection}[(March 2023)]{FunNet}
+    % \begin{subitems}
+    %     \item Implemented a variation of \textbf{ResNet} architecture with \textbf{PyTorch} to perform classification on images of animals
+    %     \item Analyzed trials to find the best model with 93\% validation accuracy and 0.1 validation loss
+    % \end{subitems}
+    % \end{resume_subsection}
+
+    % \begin{resume_subsection}[(January 2021)]{SelfDiscord}
+    % \begin{subitems}
+    %     \item Open-sourced a \textbf{Python} API wrapper for Discord developers to automate accounts and perform actions
+    %     \item Allows users to easily interact with Discord's API to perform multiple actions such as friend requests, messages, or server managing
+    % \end{subitems}
+    % \end{resume_subsection}
+
+\end{resume_section}
+
+\begin{resume_section}{Skills}
+  \begin{nospacetabbing}
+  % \textbf{Interests} \= Artificial Intelligence, Web Development, Automation, Finance, Guitar, Basketball, Weight Lifting, Film\\
+  \textbf{Languages}  \= Python, TypeScript, JavaScript, Java, C/C++/C\#, SQL, Bash/Shell, HTML/CSS\\*
+\textbf{Technologies} \= \underline{Frontend}: React, Next.js, Apollo Client, GraphQL, React Testing Library, Jasmine, Tailwind, Storybook \\
+\> \underline{Backend}: Node.js, Express, Django, Flask, PostgreSQL, MongoDB, SQLAlchemy, WebSockets, AWS \\ 
+\> \underline{ML \& Data Science}: PyTorch, TensorFlow, DSPy, NumPy, Pandas, Snowflake, Weights \& Biases, LLMs \\
+  \textbf{Certifications} \= Databricks Accreditation - Generative AI Fundamentals, TensorFlow Development Google Certificate \\*
+  \end{nospacetabbing}
+
+\end{resume_section}
+
+\end{document}
