@@ -2,11 +2,11 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { JobForm } from '@/components/jobs/job-form';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { createOptimizationJob } from '@/lib/api';
-import { getSettings, getResumeLatex, saveJob, canCreateNewJob, StoredJob } from '@/lib/storage';
-import { requestNotificationPermission } from '@/lib/notifications';
+import { JobForm } from '../../components/jobs/job-form';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
+import { createOptimizationJob } from '../../lib/api';
+import { getSettings, getResumeLatex, saveJob, canCreateNewJob, StoredJob } from '../../lib/storage';
+import { requestNotificationPermission } from '../../lib/notifications';
 import { toast } from 'sonner';
 
 export default function NewJobPage() {

@@ -2,9 +2,9 @@
 
 import { useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { StoredJob } from '@/lib/storage';
-import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
+import { StoredJob } from '../../lib/storage';
+import { Button } from '../ui/button';
 import Link from 'next/link';
 import { Plus } from 'lucide-react';
 

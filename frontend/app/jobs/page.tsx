@@ -2,11 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
-import { getStoredJobs, cleanupOldJobs, StoredJob } from '@/lib/storage';
+import { getStoredJobs, cleanupOldJobs, StoredJob } from '../../lib/storage';
 
 // Dynamically import JobList with SSR disabled to avoid hydration issues
 // JobList depends on localStorage which is not available on the server
-const JobList = dynamic(() => import('@/components/jobs/job-list').then(mod => ({ default: mod.JobList })), {
+const JobList = dynamic(() => import('../../components/jobs/job-list').then(mod => ({ default: mod.JobList })), {
   ssr: false,
   loading: () => (
     <div className="space-y-4">

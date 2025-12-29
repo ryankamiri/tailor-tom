@@ -1,13 +1,13 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { LatexEditor } from '@/components/editor/latex-editor';
-import { getSettings, saveSettings, getResumeLatex, saveResumeLatex, UserSettings } from '@/lib/storage';
+import { Button } from '../ui/button';
+import { Input } from '../ui/input';
+import { Label } from '../ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
+import { LatexEditor } from '../editor/latex-editor';
+import { getSettings, saveSettings, getResumeLatex, saveResumeLatex, UserSettings } from '../../lib/storage';
 import { toast } from 'sonner';
 
 export function SettingsForm() {

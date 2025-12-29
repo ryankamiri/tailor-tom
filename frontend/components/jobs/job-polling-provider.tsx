@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect } from 'react';
-import { getStoredJobs, updateJobStatus } from '@/lib/storage';
-import { getJobStatus } from '@/lib/api';
-import { showJobCompleteNotification, isTabFocused } from '@/lib/notifications';
+import { getStoredJobs, updateJobStatus } from '../../lib/storage';
+import { getJobStatus } from '../../lib/api';
+import { showJobCompleteNotification, isTabFocused } from '../../lib/notifications';
 
 /**
  * Global job polling provider that runs on all pages.

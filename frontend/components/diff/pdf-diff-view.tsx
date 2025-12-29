@@ -1,9 +1,9 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { getAnnotatedDiffPdfs } from '@/lib/api';
-import { Skeleton } from '@/components/ui/skeleton';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../ui/card';
+import { getAnnotatedDiffPdfs } from '../../lib/api';
+import { Skeleton } from '../ui/skeleton';
 import { Loader2 } from 'lucide-react';
 
 export interface PdfDiffViewProps {

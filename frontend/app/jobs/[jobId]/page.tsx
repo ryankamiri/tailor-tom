@@ -2,15 +2,15 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Skeleton } from '@/components/ui/skeleton';
-import { getJobStatus, getJobLatex, JobStatus, deleteJob } from '@/lib/api';
-import { updateJobStatus, storeOptimizedLatex, getOptimizedLatex, getStoredJob, getJobFilename } from '@/lib/storage';
-import { showJobCompleteNotification, isTabFocused } from '@/lib/notifications';
-import { JobStatusBadge } from '@/components/jobs/job-status-badge';
-import { JobStatusView } from '@/components/jobs/job-status-view';
-import { JobResultsView } from '@/components/jobs/job-results-view';
+import { Card, CardContent } from '../../../components/ui/card';
+import { Button } from '../../../components/ui/button';
+import { Skeleton } from '../../../components/ui/skeleton';
+import { getJobStatus, getJobLatex, JobStatus, deleteJob } from '../../../lib/api';
+import { updateJobStatus, storeOptimizedLatex, getOptimizedLatex, getStoredJob, getJobFilename } from '../../../lib/storage';
+import { showJobCompleteNotification, isTabFocused } from '../../../lib/notifications';
+import { JobStatusBadge } from '../../../components/jobs/job-status-badge';
+import { JobStatusView } from '../../../components/jobs/job-status-view';
+import { JobResultsView } from '../../../components/jobs/job-results-view';
 import { toast } from 'sonner';
 
 export default function JobDetailsPage() {

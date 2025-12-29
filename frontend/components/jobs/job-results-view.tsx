@@ -1,12 +1,12 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { LatexEditor } from '@/components/editor/latex-editor';
-import { PdfDiffView } from '@/components/diff/pdf-diff-view';
-import { DiffResponse, validateLatex, compileLatexToPdf, computeLatexDiff } from '@/lib/api';
-import { storeOptimizedLatex } from '@/lib/storage';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
+import { Button } from '../ui/button';
+import { LatexEditor } from '../editor/latex-editor';
+import { PdfDiffView } from '../diff/pdf-diff-view';
+import { DiffResponse, validateLatex, compileLatexToPdf, computeLatexDiff } from '../../lib/api';
+import { storeOptimizedLatex } from '../../lib/storage';
 import { toast } from 'sonner';
 
 export interface JobResultsViewProps {
