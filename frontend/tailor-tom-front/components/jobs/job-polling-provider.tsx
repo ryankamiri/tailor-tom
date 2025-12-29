@@ -1,0 +1,86 @@
+'use client';
+
+import { useEffect } from 'react';
+import { getStoredJobs, updateJobStatus } from '@/lib/storage';
+import { getJobStatus } from '@/lib/api';
+import { showJobCompleteNotification, isTabFocused } from '@/lib/notifications';
+
+/**
+ * Global job polling provider that runs on all pages.
+ * Polls for pending/processing jobs and shows notifications when they complete.
+ */
+export function JobPollingProvider() {
+  useEffect(() => {
+    const pollJobStatuses = async () => {
+      const jobs = getStoredJobs();
+      
+      // Only poll jobs that are pending or processing
+      const jobsToPoll = jobs.filter(
+        (job) => job.status === 'pending' || job.status === 'processing'
+      );
+
+      if (jobsToPoll.length === 0) {
+        return; // No jobs to poll
+      }
+
+      // Poll each job in parallel
+      await Promise.allSettled(
+        jobsToPoll.map(async (job) => {
+          try {
+            const status = await getJobStatus(job.jobId);
+            
+            // Update localStorage if status changed
+            if (status.status !== job.status) {
+              updateJobStatus(
+                job.jobId,
+                status.status,
+                status.company_name,
+                status.completed_at,
+                status.error_message
+              );
+              
+              // Show notification when job completes
+              if (status.status === 'completed' && status.company_name) {
+                showJobCompleteNotification(
+                  status.company_name,
+                  job.jobId,
+                  isTabFocused()
+                );
+              }
+            }
+          } catch (error) {
+            // Check if it's a 404 (job not found)
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            const isNotFound = errorMessage.includes('(404)') || errorMessage.toLowerCase().includes('not found');
+            
+            if (isNotFound) {
+              // Job doesn't exist on backend, mark as failed with server error
+              console.warn(`[JobPollingProvider] Job ${job.jobId} not found on backend (404), marking as failed`);
+              updateJobStatus(
+                job.jobId,
+                'failed',
+                job.companyName,
+                new Date().toISOString(),
+                'Internal server error: Job was deleted or lost on the server'
+              );
+            } else {
+              // Other errors, just log but don't change status
+              console.error(`[JobPollingProvider] Error polling job ${job.jobId}:`, error);
+            }
+          }
+        })
+      );
+    };
+
+    // Poll immediately, then every 10 seconds
+    pollJobStatuses();
+    const interval = setInterval(pollJobStatuses, 10000);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, []); // Run once on mount
+
+  return null; // This component doesn't render anything
+}
+
