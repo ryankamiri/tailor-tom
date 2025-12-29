@@ -1,15 +1,11 @@
 import type { NextConfig } from "next";
-import path from "path";
 
 const nextConfig: NextConfig = {
   /* config options here */
-  // Ensure path aliases work correctly
-  webpack: (config) => {
-    config.resolve.alias = {
-      ...config.resolve.alias,
-      "@": path.resolve(__dirname, "."),
-    };
-    return config;
+  // Disable Turbopack to use webpack (which handles path aliases better)
+  // This ensures @/ path aliases work correctly in Vercel builds
+  experimental: {
+    turbo: {},
   },
 };
 
