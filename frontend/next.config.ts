@@ -3,11 +3,11 @@ import path from "path";
 
 const nextConfig: NextConfig = {
   // Use webpack instead of Turbopack to fix path alias resolution issues with Vercel Root Directory
-  webpack: (config) => {
-    // Explicitly resolve path aliases for webpack
+  webpack: (config, { dir }) => {
+    // Explicitly resolve path aliases for webpack using the build directory
     config.resolve.alias = {
       ...config.resolve.alias,
-      '@': path.resolve(__dirname),
+      '@': path.resolve(dir),
     };
     return config;
   },
