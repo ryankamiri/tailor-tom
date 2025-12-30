@@ -1,0 +1,6 @@
+{
+  "buildCommand": "pwd && echo '=== Current Directory ===' && ls -la && echo '=== Frontend Directory ===' && ls -la frontend/ && echo '=== App Directory ===' && ls -la frontend/app/ && echo '=== Lib Directory ===' && ls -la frontend/lib/ && echo '=== Starting Build ===' && cd frontend && npm run build",
+  "installCommand": "cd frontend && npm install",
+  "outputDirectory": "frontend/.next"
+}
+
