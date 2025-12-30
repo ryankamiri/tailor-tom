@@ -59,9 +59,15 @@ def create_job(job_id: str, job_data: Dict[str, Any]) -> None:
     key = _get_job_key(job_id)
     
     # Convert result dict to JSON string for storage
-    job_data_copy = job_data.copy()
-    if job_data_copy.get("result"):
-        job_data_copy["result"] = json.dumps(job_data_copy["result"])
+    # Also convert None values to empty strings (Redis doesn't accept None)
+    job_data_copy = {}
+    for field, value in job_data.items():
+        if value is None:
+            job_data_copy[field] = ""  # Convert None to empty string
+        elif field == "result" and isinstance(value, dict):
+            job_data_copy[field] = json.dumps(value)
+        else:
+            job_data_copy[field] = str(value)
     
     # Set TTL (7 days default)
     ttl_seconds = settings.redis_ttl_days * 24 * 60 * 60
