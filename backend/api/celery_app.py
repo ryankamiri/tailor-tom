@@ -1,16 +1,30 @@
 """Celery application configuration for TailorTom."""
 
 import logging
+import os
 from celery import Celery
 from tailor_tom.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Validate REDIS_URL before creating Celery app
+redis_url = settings.redis_url
+if not redis_url or not redis_url.strip():
+    error_msg = (
+        f"REDIS_URL is empty or invalid. "
+        f"Environment variable REDIS_URL={os.getenv('REDIS_URL', 'NOT SET')}. "
+        f"Settings redis_url={redis_url!r}"
+    )
+    logger.error(error_msg)
+    raise ValueError(error_msg)
+
+logger.info(f"Initializing Celery with broker: {redis_url[:20]}...")  # Log first 20 chars for security
+
 # Create Celery app instance
 celery_app = Celery(
     "tailortom",
-    broker=settings.redis_url,
-    backend=settings.redis_url,
+    broker=redis_url,
+    backend=redis_url,
     include=["api.tasks"],
 )
 
@@ -44,5 +58,5 @@ celery_app.conf.update(
     worker_disable_rate_limits=False,
 )
 
-logger.info(f"Celery app configured with broker: {settings.redis_url}")
+logger.info(f"Celery app configured with broker: {redis_url[:20]}...")
 
