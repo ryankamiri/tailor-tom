@@ -20,12 +20,28 @@ if not redis_url or not redis_url.strip():
 
 logger.info(f"Initializing Celery with broker: {redis_url[:20]}...")  # Log first 20 chars for security
 
+# Configure SSL options for rediss:// (TLS) connections
+# Upstash Redis requires SSL but doesn't need certificate verification
+# Add SSL parameters directly to the URL as query parameters (most reliable method)
+is_tls = redis_url.startswith("rediss://")
+broker_url = redis_url
+backend_url = redis_url
+
+if is_tls:
+    # Add ssl_cert_reqs parameter to URL for both broker and backend
+    # Use CERT_NONE for Upstash (no certificate verification needed)
+    separator = "&" if "?" in redis_url else "?"
+    broker_url = f"{redis_url}{separator}ssl_cert_reqs=CERT_NONE"
+    backend_url = f"{redis_url}{separator}ssl_cert_reqs=CERT_NONE"
+    logger.info("Added SSL certificate requirements to Redis URL for TLS connection")
+
 # Create Celery app instance
 celery_app = Celery(
     "tailortom",
-    broker=redis_url,
-    backend=redis_url,
+    broker=broker_url,
+    backend=backend_url,
     include=["api.tasks"],
+    broker_connection_retry_on_startup=True,
 )
 
 # Celery configuration
