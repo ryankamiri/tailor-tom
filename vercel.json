@@ -1,6 +1,6 @@
 {
-  "buildCommand": "cd frontend && chmod +x debug-build.sh && ./debug-build.sh",
-  "installCommand": "cd frontend && npm install",
-  "outputDirectory": "frontend/.next"
+  "buildCommand": "chmod +x debug-build.sh && ./debug-build.sh",
+  "installCommand": "npm install",
+  "outputDirectory": ".next"
 }
 
