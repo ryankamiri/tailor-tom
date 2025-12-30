@@ -95,7 +95,14 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     if not job_data:
         return None
     
-    # Convert result JSON string back to dict
+    # Convert empty strings back to None (we stored None as "" in create_job)
+    # Handle all optional fields that could be None
+    optional_string_fields = ["result", "completed_at", "error_message", "company_name"]
+    for field in optional_string_fields:
+        if job_data.get(field) == "":
+            job_data[field] = None
+    
+    # Convert result JSON string back to dict (if it exists and is not None)
     if job_data.get("result"):
         try:
             job_data["result"] = json.loads(job_data["result"])
@@ -103,11 +110,20 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
             logger.warning(f"Failed to parse result JSON for job {job_id}")
             job_data["result"] = None
     
-    # Convert numeric fields
+    # Convert numeric fields (handle empty strings safely)
     if job_data.get("target_pages"):
-        job_data["target_pages"] = int(job_data["target_pages"])
+        try:
+            job_data["target_pages"] = int(job_data["target_pages"])
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid target_pages value for job {job_id}: {job_data.get('target_pages')}")
+            job_data["target_pages"] = 1  # Default fallback
+    
     if job_data.get("max_iterations"):
-        job_data["max_iterations"] = int(job_data["max_iterations"])
+        try:
+            job_data["max_iterations"] = int(job_data["max_iterations"])
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid max_iterations value for job {job_id}: {job_data.get('max_iterations')}")
+            job_data["max_iterations"] = 3  # Default fallback
     
     return job_data
 
