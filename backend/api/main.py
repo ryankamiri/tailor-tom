@@ -30,12 +30,15 @@ app = FastAPI(
 )
 
 # CORS middleware
+# Allow requests from frontend domains
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
         "https://*.vercel.app",
-    ],  # Will be configured in production
+        "https://tailortom.org",
+        "https://www.tailortom.org"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

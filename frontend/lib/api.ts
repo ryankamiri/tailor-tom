@@ -1,6 +1,7 @@
 /** API client functions for TailorTom backend. */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// Remove trailing slash to avoid double slashes in URLs
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/+$/, '');
 
 export interface OptimizationRequest {
   resume_latex: string;
