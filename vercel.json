@@ -1,5 +1,4 @@
 {
-  "buildCommand": "chmod +x debug-build.sh && ./debug-build.sh",
   "installCommand": "npm install",
   "outputDirectory": ".next"
 }
