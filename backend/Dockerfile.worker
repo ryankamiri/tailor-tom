@@ -1,0 +1,22 @@
+FROM python:3.10-slim
+
+# Install pdflatex and required LaTeX packages
+# Using texlive-full for maximum compatibility (~5GB)
+# For smaller size, use: texlive-latex-base texlive-latex-extra texlive-fonts-recommended texlive-latex-recommended (~500MB)
+RUN apt-get update && apt-get install -y \
+    texlive-full \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy requirements and install Python dependencies
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy backend code
+COPY backend/ /app/
+
+# Run the Celery worker
+# Concurrency is set via CELERY_WORKER_CONCURRENCY env var (default: 3)
+CMD celery -A api.worker worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-3}
+
