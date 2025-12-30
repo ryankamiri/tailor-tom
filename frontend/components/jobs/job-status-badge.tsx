@@ -1,7 +1,7 @@
 'use client';
 
-import { Badge } from '../ui/badge';
-import { STATUS_COLORS } from '../../lib/constants';
+import { Badge } from '@/components/ui/badge';
+import { STATUS_COLORS } from '@/lib/constants';
 
 export interface JobStatusBadgeProps {
   status: 'pending' | 'processing' | 'completed' | 'failed';

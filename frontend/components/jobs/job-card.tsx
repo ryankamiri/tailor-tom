@@ -2,14 +2,14 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
-import { Badge } from '../ui/badge';
-import { Button } from '../ui/button';
-import { StoredJob } from '../../lib/storage';
-import { STATUS_COLORS, STATUS_LABELS } from '../../lib/constants';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { StoredJob } from '@/lib/storage';
+import { STATUS_COLORS, STATUS_LABELS } from '@/lib/constants';
 import { format } from 'date-fns';
-import { cancelJob, deleteJob } from '../../lib/api';
-import { updateJobStatus, deleteStoredJob } from '../../lib/storage';
+import { cancelJob, deleteJob } from '@/lib/api';
+import { updateJobStatus, deleteStoredJob } from '@/lib/storage';
 import { toast } from 'sonner';
 import { Trash2, X } from 'lucide-react';
 

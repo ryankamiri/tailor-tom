@@ -1,8 +1,8 @@
 'use client';
 
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
-import { DiffResponse } from '../../lib/api';
-import { Badge } from '../ui/badge';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { DiffResponse } from '@/lib/api';
+import { Badge } from '@/components/ui/badge';
 
 export interface DiffViewProps {
   diff: DiffResponse;

@@ -1,7 +1,7 @@
 'use client';
 
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
-import { JobStatus } from '../../lib/api';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { JobStatus } from '@/lib/api';
 
 export interface JobStatusViewProps {
   status: JobStatus['status'];
