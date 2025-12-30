@@ -31,14 +31,16 @@ app = FastAPI(
 
 # CORS middleware
 # Allow requests from frontend domains
+# Note: FastAPI CORS doesn't support wildcards in allow_origins, so we use allow_origin_regex for Vercel
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "https://*.vercel.app",
         "https://tailortom.org",
-        "https://www.tailortom.org"
+        "https://www.tailortom.org",
+        "https://api.tailortom.org",  # Allow API to call itself if needed
     ],
+    allow_origin_regex=r"https://.*\.vercel\.app",  # Match any Vercel preview deployment
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
