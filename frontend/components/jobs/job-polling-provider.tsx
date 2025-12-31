@@ -8,6 +8,10 @@ import { showJobCompleteNotification, isTabFocused } from '@/lib/notifications';
 /**
  * Global job polling provider that runs on all pages.
  * Polls for pending/processing jobs and shows notifications when they complete.
+ * 
+ * Optimizations:
+ * - Polls every 60 seconds (1 minute) instead of 10 seconds to reduce Redis reads
+ * - Automatically stops polling jobs that complete or fail (filtered out on next poll)
  */
 export function JobPollingProvider() {
   useEffect(() => {
@@ -15,12 +19,13 @@ export function JobPollingProvider() {
       const jobs = getStoredJobs();
       
       // Only poll jobs that are pending or processing
+      // Completed/failed jobs are automatically excluded, so polling stops for them
       const jobsToPoll = jobs.filter(
         (job) => job.status === 'pending' || job.status === 'processing'
       );
 
       if (jobsToPoll.length === 0) {
-        return; // No jobs to poll
+        return; // No jobs to poll - polling effectively stops
       }
 
       // Poll each job in parallel
@@ -72,9 +77,11 @@ export function JobPollingProvider() {
       );
     };
 
-    // Poll immediately, then every 10 seconds
+    // Poll immediately on mount
     pollJobStatuses();
-    const interval = setInterval(pollJobStatuses, 10000);
+
+    // Set up interval to poll every 60 seconds (1 minute)
+    const interval = setInterval(pollJobStatuses, 60000);
 
     return () => {
       clearInterval(interval);

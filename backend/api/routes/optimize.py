@@ -85,8 +85,6 @@ async def create_optimization_job(
             },
             queue=queue_name,
         )
-        # Log task ID for debugging (even though we only log errors normally)
-        logger.error(f"Enqueued task {task_result.id} for job {job_id} to queue '{queue_name}'")
     except Exception as e:
         logger.exception(f"Failed to enqueue task for job {job_id} to queue '{queue_name}': {e}")
         # Update job status to failed

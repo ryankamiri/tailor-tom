@@ -159,7 +159,7 @@ export default function JobDetailsPage() {
           console.error('Error polling job status:', error);
         }
       }
-    }, 30000); // Poll every 30 seconds
+    }, 60000); // Poll every 60 seconds (1 minute) to reduce Redis reads
 
     return () => {
       clearInterval(interval);

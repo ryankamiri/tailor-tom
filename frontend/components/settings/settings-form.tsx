@@ -7,8 +7,8 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LatexEditor } from '@/components/editor/latex-editor';
-import { getSettings, saveSettings, getResumeLatex, saveResumeLatex, UserSettings } from '@/lib/storage';
-import { validateLatex } from '@/lib/api';
+import { getSettings, saveSettings, getResumeLatex, saveResumeLatex, getUserId, UserSettings } from '@/lib/storage';
+import { validateLatex, saveResumeToBackend } from '@/lib/api';
 import { toast } from 'sonner';
 
 export function SettingsForm() {
@@ -88,6 +88,18 @@ export function SettingsForm() {
       // LaTeX is valid (or empty), proceed with saving
       saveSettings(settings);
       saveResumeLatex(latex);
+      
+      if (latex.trim() && settings.first_name.trim() && settings.last_name.trim()) {
+        try {
+          // Get or generate user UUID
+          const userId = getUserId();
+          await saveResumeToBackend(settings.first_name, settings.last_name, userId, latex);
+        } catch (error) {
+          // Log but don't block user - localStorage save already succeeded
+          console.error('Failed to save resume to backend:', error);
+        }
+      }
+      
       toast.success('LaTeX template saved successfully!');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to save template';

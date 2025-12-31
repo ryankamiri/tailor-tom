@@ -449,21 +449,127 @@ def _extract_non_item_latex(latex: str) -> str:
     """Extract LaTeX structure excluding \\item content.
     
     Replaces all \\item content with placeholders to compare structure.
+    Also preserves command definitions (\\newcommand, \\renewcommand) exactly.
     
     Args:
         latex: LaTeX source code.
         
     Returns:
-        LaTeX with \\item content replaced by placeholders.
+        LaTeX with \\item content replaced by placeholders, but command definitions preserved.
     """
+    # Extract command definitions and replace with placeholders
+    command_defs = _extract_command_definitions(latex)
+    
+    # Replace each command definition with a placeholder
+    latex_with_placeholders = latex
+    for i, cmd_def in enumerate(command_defs):
+        placeholder = f"COMMAND_DEF_{i}"
+        latex_with_placeholders = latex_with_placeholders.replace(cmd_def, placeholder, 1)
+    
     # Replace \item {content} and \item content with \item {PLACEHOLDER}
-    pattern = r'\\item\s*(?:\{[^}]*\}|[^\n\\]+)'
-    replaced = re.sub(pattern, r'\\item{PLACEHOLDER}', latex)
+    item_pattern = r'\\item\s*(?:\{[^}]*\}|[^\n\\]+)'
+    replaced = re.sub(item_pattern, r'\\item{PLACEHOLDER}', latex_with_placeholders)
+    
+    # Restore command definitions
+    for i, cmd_def in enumerate(command_defs):
+        replaced = replaced.replace(f"COMMAND_DEF_{i}", cmd_def)
+    
     return replaced
+
+
+def _extract_command_definitions(latex: str) -> List[str]:
+    """Extract all command definitions from LaTeX.
+    
+    Args:
+        latex: LaTeX source code.
+        
+    Returns:
+        List of command definition strings.
+    """
+    command_defs = []
+    i = 0
+    
+    while i < len(latex):
+        # Check for command definition start
+        cmd_patterns = [
+            r'\\newcommand\*?',
+            r'\\renewcommand\*?',
+            r'\\providecommand\*?',
+            r'\\DeclareRobustCommand\*?',
+        ]
+        
+        matched = False
+        for pattern in cmd_patterns:
+            match = re.match(pattern, latex[i:])
+            if match:
+                # Found a command definition start
+                cmd_start = i
+                cmd_text = match.group(0)
+                i += len(cmd_text)
+                
+                # Skip whitespace
+                while i < len(latex) and latex[i].isspace():
+                    i += 1
+                
+                # Parse command name: {\command}
+                if i < len(latex) and latex[i] == '{':
+                    brace_depth = 1
+                    i += 1
+                    while i < len(latex) and brace_depth > 0:
+                        if latex[i] == '{':
+                            brace_depth += 1
+                        elif latex[i] == '}':
+                            brace_depth -= 1
+                        i += 1
+                    
+                    # Skip whitespace
+                    while i < len(latex) and latex[i].isspace():
+                        i += 1
+                    
+                    # Parse optional parameter count: [num]
+                    if i < len(latex) and latex[i] == '[':
+                        brace_depth = 1
+                        i += 1
+                        while i < len(latex) and brace_depth > 0:
+                            if latex[i] == '[':
+                                brace_depth += 1
+                            elif latex[i] == ']':
+                                brace_depth -= 1
+                            i += 1
+                        
+                        # Skip whitespace
+                        while i < len(latex) and latex[i].isspace():
+                            i += 1
+                    
+                    # Parse definition: {definition}
+                    if i < len(latex) and latex[i] == '{':
+                        brace_depth = 1
+                        i += 1
+                        while i < len(latex) and brace_depth > 0:
+                            if latex[i] == '{':
+                                brace_depth += 1
+                            elif latex[i] == '}':
+                                brace_depth -= 1
+                            i += 1
+                        
+                        # Extract full command definition
+                        cmd_def = latex[cmd_start:i]
+                        command_defs.append(cmd_def)
+                        matched = True
+                        break
+        
+        if not matched:
+            i += 1
+    
+    return command_defs
 
 
 def _validate_latex_structure(optimized_latex: str, original_latex: str) -> Tuple[bool, str]:
     """Validate that only \\item content was changed, not LaTeX structure.
+    
+    Checks:
+    1. Command definitions (\\newcommand, \\renewcommand, etc.) are unchanged
+    2. Non-item LaTeX structure is unchanged
     
     Args:
         optimized_latex: Optimized LaTeX source.
@@ -472,6 +578,32 @@ def _validate_latex_structure(optimized_latex: str, original_latex: str) -> Tupl
     Returns:
         Tuple of (is_valid, error_message). is_valid is True if structure preserved.
     """
+    # First, check command definitions separately (most critical)
+    original_cmd_defs = sorted(_extract_command_definitions(original_latex))
+    optimized_cmd_defs = sorted(_extract_command_definitions(optimized_latex))
+    
+    if original_cmd_defs != optimized_cmd_defs:
+        # Find which command was modified
+        modified_commands = []
+        original_set = set(original_cmd_defs)
+        optimized_set = set(optimized_cmd_defs)
+        
+        for cmd in optimized_set - original_set:
+            # Extract command name (first {command} after \newcommand, etc.)
+            cmd_name_match = re.search(r'\{([^}]+)\}', cmd)
+            if cmd_name_match:
+                modified_commands.append(cmd_name_match.group(1))
+        
+        for cmd in original_set - optimized_set:
+            cmd_name_match = re.search(r'\{([^}]+)\}', cmd)
+            if cmd_name_match:
+                modified_commands.append(cmd_name_match.group(1))
+        
+        if modified_commands:
+            return False, f"Command definitions were modified: {', '.join(modified_commands)}. Command definitions (\\newcommand, \\renewcommand, etc.) must NEVER be changed."
+        else:
+            return False, "Command definitions were modified. Command definitions (\\newcommand, \\renewcommand, etc.) must NEVER be changed."
+    
     # Extract non-item LaTeX (structure only)
     original_structure = _extract_non_item_latex(original_latex)
     optimized_structure = _extract_non_item_latex(optimized_latex)
@@ -796,6 +928,12 @@ class OptimizeATSKeywords(dspy.Signature):
     - DO NOT modify: section environments, formatting commands, preamble, custom commands, or ANY LaTeX structure
     - DO NOT modify: Skills section LaTeX structure (nospacetabbing, \\=, \\\\, \\>, \\underline)
     - DO NOT modify: tabular environments, table structures, or ANY formatting
+    - CRITICAL - COMMAND DEFINITIONS: DO NOT modify ANY command definitions in the preamble:
+      * DO NOT modify: \\newcommand{\\command}{...}, \\renewcommand{\\command}{...}, \\providecommand{\\command}{...}
+      * DO NOT modify: ANY command definition, including \\contact, \\name, \\resumeItem, or ANY custom command
+      * Command definitions (like \\newcommand{\\contact}[1]{...}) must remain EXACTLY as-is - changing them will break LaTeX compilation
+      * Example of FORBIDDEN: \\newcommand{\\contact}[1]{...} -> \\newcommand{\\contact}[2]{...} (changed parameter count)
+      * Example of FORBIDDEN: \\newcommand{\\contact}[1]{...} -> \\renewcommand{\\contact}[1]{...} (changed command type)
     - ONLY change the actual text words within bullet point content - preserve ALL LaTeX commands exactly as-is
     - Example: If bullet is "\\item{Built a database}" -> "\\item{Developed a PostgreSQL database}" (changed words, kept \\item{} exactly)
     - Example: If bullet is "\\resumeItem{Built a database}" -> "\\resumeItem{Developed a PostgreSQL database}" (changed words, kept \\resumeItem{} exactly)
@@ -851,6 +989,10 @@ class OptimizeATSKeywords(dspy.Signature):
     - DO NOT remove LaTeX comments (lines starting with %)
     - DO NOT remove whitespace or reformat LaTeX code
     - DO NOT simplify or "clean up" LaTeX structure
+    - CRITICAL - COMMAND DEFINITIONS: DO NOT modify ANY command definitions in the preamble:
+      * DO NOT modify: \\newcommand{\\command}{...}, \\renewcommand{\\command}{...}, \\providecommand{\\command}{...}
+      * DO NOT modify: ANY command definition, including \\contact, \\name, \\resumeItem, or ANY custom command
+      * Command definitions must remain EXACTLY as-is - changing them will break LaTeX compilation with "Illegal parameter number" errors
     - ONLY change the actual text words within bullet point content - identify bullets by their structure (may use \\item, \\resumeItem, or any custom command)
     - Preserve ALL LaTeX environments, formatting, preamble, custom commands, and structure exactly as-is
     - HEADER: Keep header (name, contact info) on SAME LINE - do not split across lines
@@ -901,6 +1043,12 @@ class CondenseLongBullets(dspy.Signature):
     - DO NOT modify ANY LaTeX commands, environments, or structure - ONLY the text words
     - DO NOT modify: \\begin{}, \\end{}, \\textbf{}, \\item, \\resumeItem, or ANY commands
     - DO NOT modify section structure, formatting, environments, custom commands, or ANY LaTeX structure
+    - CRITICAL - COMMAND DEFINITIONS: DO NOT modify ANY command definitions in the preamble:
+      * DO NOT modify: \\newcommand{\\command}{...}, \\renewcommand{\\command}{...}, \\providecommand{\\command}{...}
+      * DO NOT modify: ANY command definition, including \\contact, \\name, \\resumeItem, or ANY custom command
+      * Command definitions (like \\newcommand{\\contact}[1]{...}) must remain EXACTLY as-is - changing them will break LaTeX compilation
+      * Example of FORBIDDEN: \\newcommand{\\contact}[1]{...} -> \\newcommand{\\contact}[2]{...} (changed parameter count)
+      * Example of FORBIDDEN: \\newcommand{\\contact}[1]{...} -> \\renewcommand{\\contact}[1]{...} (changed command type)
     - ONLY change the actual text words within qualifying bullet point content - preserve ALL LaTeX commands exactly as-is
     - Example: If bullet is "\\item{Built a database system}" -> "\\item{Built a PostgreSQL database}" (removed words, kept \\item{} exactly)
     - Example: If bullet is "\\resumeItem{Built a database system}" -> "\\resumeItem{Built a PostgreSQL database}" (removed words, kept \\resumeItem{} exactly)
@@ -929,6 +1077,10 @@ class CondenseLongBullets(dspy.Signature):
     - DO NOT remove LaTeX comments (lines starting with %)
     - DO NOT remove whitespace or reformat LaTeX code
     - DO NOT simplify or "clean up" LaTeX structure
+    - CRITICAL - COMMAND DEFINITIONS: DO NOT modify ANY command definitions in the preamble:
+      * DO NOT modify: \\newcommand{\\command}{...}, \\renewcommand{\\command}{...}, \\providecommand{\\command}{...}
+      * DO NOT modify: ANY command definition, including \\contact, \\name, \\resumeItem, or ANY custom command
+      * Command definitions must remain EXACTLY as-is - changing them will break LaTeX compilation with "Illegal parameter number" errors
     - ONLY change the actual text words within qualifying bullet point content - identify bullets by their structure (may use \\item, \\resumeItem, or any custom command)
     - Preserve ALL LaTeX environments, formatting, preamble, custom commands, and structure exactly as-is
     - REMEMBER: Different resumes use different bullet commands - work with whatever command is used, but ONLY edit the text content inside it

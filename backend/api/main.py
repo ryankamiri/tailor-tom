@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import optimize, jobs, diff, compile
+from api.routes import optimize, jobs, diff, compile, settings, admin
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -51,6 +51,8 @@ app.include_router(optimize.router, prefix="/api", tags=["optimize"])
 app.include_router(jobs.router, prefix="/api", tags=["jobs"])
 app.include_router(diff.router, prefix="/api", tags=["diff"])
 app.include_router(compile.router, prefix="/api", tags=["compile"])
+app.include_router(settings.router, prefix="/api", tags=["settings"])
+app.include_router(admin.router, prefix="/api", tags=["admin"])
 
 
 @app.get("/")

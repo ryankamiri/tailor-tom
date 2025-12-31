@@ -1,6 +1,6 @@
 /** localStorage helpers for TailorTom. */
 
-import { STORAGE_PREFIX, MAX_JOBS, JOB_STORAGE_KEY, JOB_MAX_AGE_DAYS } from './constants';
+import { STORAGE_PREFIX, MAX_JOBS, JOB_STORAGE_KEY, JOB_MAX_AGE_DAYS, ADMIN_RESUMES_STORAGE_KEY } from './constants';
 
 export interface StoredJob {
   jobId: string;
@@ -26,6 +26,34 @@ export function getResumeLatex(): string | null {
 export function saveResumeLatex(latex: string): void {
   if (typeof window === 'undefined') return;
   localStorage.setItem(`${STORAGE_PREFIX}resume_latex`, latex);
+}
+
+export function deleteResumeLatex(): void {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(`${STORAGE_PREFIX}resume_latex`);
+}
+
+/**
+ * User UUID management.
+ * Each user gets a unique UUID stored in localStorage.
+ */
+export function getUserId(): string {
+  if (typeof window === 'undefined') return '';
+  
+  let userId = localStorage.getItem(`${STORAGE_PREFIX}user_id`);
+  
+  // Generate new UUID if doesn't exist
+  if (!userId) {
+    // Generate UUID v4
+    userId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+    localStorage.setItem(`${STORAGE_PREFIX}user_id`, userId);
+  }
+  
+  return userId;
 }
 
 /**
@@ -275,5 +303,40 @@ export function deleteStoredJob(jobId: string): void {
   if (filtered.length !== jobs.length) {
     localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(filtered));
   }
+}
+
+/**
+ * Admin resume cache management (localStorage).
+ * Used to cache resumes from Redis for offline viewing and merging.
+ */
+export interface CachedResume {
+  resume_id: string;
+  user_id?: string;
+  first_name: string;
+  last_name: string;
+  created_at: string;
+  filename: string;
+  latex?: string; // Full LaTeX content for viewing
+}
+
+export function getCachedAdminResumes(): CachedResume[] {
+  if (typeof window === 'undefined') return [];
+  const cached = localStorage.getItem(ADMIN_RESUMES_STORAGE_KEY);
+  if (!cached) return [];
+  try {
+    return JSON.parse(cached);
+  } catch {
+    return [];
+  }
+}
+
+export function saveCachedAdminResumes(resumes: CachedResume[]): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(ADMIN_RESUMES_STORAGE_KEY, JSON.stringify(resumes));
+}
+
+export function clearCachedAdminResumes(): void {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(ADMIN_RESUMES_STORAGE_KEY);
 }
 

@@ -231,3 +231,186 @@ export async function compileLatexToPdf(
   return res.blob();
 }
 
+/**
+ * Save resume to backend (from settings page).
+ */
+export async function saveResumeToBackend(
+  firstName: string,
+  lastName: string,
+  userId: string,
+  latex: string
+): Promise<{ success: boolean; resume_id: string; message: string }> {
+  const res = await fetch(`${API_BASE}/api/settings/resume`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      first_name: firstName,
+      last_name: lastName,
+      user_id: userId,
+      latex: latex,
+    }),
+  });
+  
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: 'Failed to save resume' }));
+    throw new Error(error.detail || 'Failed to save resume to backend');
+  }
+  
+  return res.json();
+}
+
+/**
+ * Delete user's resume from Redis (backend).
+ */
+export async function deleteResumeFromBackend(
+  userId: string
+): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`${API_BASE}/api/settings/resume`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: userId,
+    }),
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: 'Failed to delete resume' }));
+    throw new Error(error.detail || 'Failed to delete resume from backend');
+  }
+  return res.json();
+}
+
+/**
+ * Admin: List all saved resumes.
+ */
+export async function listAdminResumes(password: string): Promise<{
+  resumes: Array<{
+    resume_id: string;
+    first_name: string;
+    last_name: string;
+    created_at: string;
+    filename: string;
+  }>;
+  count: number;
+}> {
+  // Create basic auth header
+  const credentials = btoa(`admin:${password}`);
+  
+  const res = await fetch(`${API_BASE}/api/admin/resumes`, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Basic ${credentials}`,
+    },
+  });
+  
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error('Invalid admin password');
+    }
+    const error = await res.json().catch(() => ({ detail: 'Failed to list resumes' }));
+    throw new Error(error.detail || 'Failed to list resumes');
+  }
+  
+  return res.json();
+}
+
+/**
+ * Admin: Get full resume data including LaTeX.
+ */
+export async function getAdminResume(
+  resumeId: string,
+  password: string
+): Promise<{
+  resume_id: string;
+  user_id: string;
+  first_name: string;
+  last_name: string;
+  latex: string;
+  created_at: string;
+  filename: string;
+}> {
+  // Create basic auth header
+  const credentials = btoa(`admin:${password}`);
+  
+  const res = await fetch(`${API_BASE}/api/admin/resumes/${resumeId}`, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Basic ${credentials}`,
+    },
+  });
+  
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error('Invalid admin password');
+    }
+    if (res.status === 404) {
+      throw new Error('Resume not found');
+    }
+    const error = await res.json().catch(() => ({ detail: 'Failed to get resume' }));
+    throw new Error(error.detail || 'Failed to get resume');
+  }
+  
+  return res.json();
+}
+
+/**
+ * Admin: Download a resume as PDF or LaTeX.
+ */
+export async function downloadResume(
+  resumeId: string,
+  format: 'pdf' | 'latex',
+  password: string
+): Promise<Blob> {
+  // Create basic auth header
+  const credentials = btoa(`admin:${password}`);
+  
+  const res = await fetch(`${API_BASE}/api/admin/resumes/${resumeId}/download?format=${format}`, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Basic ${credentials}`,
+    },
+  });
+  
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error('Invalid admin password');
+    }
+    if (res.status === 404) {
+      throw new Error('Resume not found');
+    }
+    const error = await res.json().catch(() => ({ detail: 'Failed to download resume' }));
+    throw new Error(error.detail || 'Failed to download resume');
+  }
+  
+  return res.blob();
+}
+
+/**
+ * Admin: Delete a resume.
+ */
+export async function deleteResume(
+  resumeId: string,
+  password: string
+): Promise<void> {
+  // Create basic auth header
+  const credentials = btoa(`admin:${password}`);
+  
+  const res = await fetch(`${API_BASE}/api/admin/resumes/${resumeId}`, {
+    method: 'DELETE',
+    headers: {
+      'Authorization': `Basic ${credentials}`,
+    },
+  });
+  
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error('Invalid admin password');
+    }
+    if (res.status === 404) {
+      throw new Error('Resume not found');
+    }
+    const error = await res.json().catch(() => ({ detail: 'Failed to delete resume' }));
+    throw new Error(error.detail || 'Failed to delete resume');
+  }
+}
+

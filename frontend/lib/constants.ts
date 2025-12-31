@@ -20,3 +20,8 @@ export const STATUS_LABELS = {
   failed: 'Failed',
 } as const;
 
+// Admin session timeout: 30 minutes
+export const ADMIN_SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
+export const ADMIN_RESUMES_STORAGE_KEY = `${STORAGE_PREFIX}admin_resumes`;
+

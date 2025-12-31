@@ -111,6 +111,12 @@ class Settings(BaseSettings):
         description="[Deprecated] Target number of pages - now configured via frontend settings",
     )
 
+    # Admin Configuration
+    admin_password: str = Field(
+        default="",
+        description="Password for admin panel access (set via ADMIN_PASSWORD env var)",
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:
