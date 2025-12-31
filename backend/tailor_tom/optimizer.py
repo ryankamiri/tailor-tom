@@ -706,8 +706,6 @@ class ResumeOptimizerPipeline(dspy.Module):
         Returns:
             OptimizationResult with optimized LaTeX and PDF.
         """
-        logger.info("Starting resume optimization pipeline - Phase 1: ATS Keyword Optimization")
-
         # Phase 1: ATS Keyword Optimization
         try:
             ats_result = self.ats_optimizer(
@@ -715,15 +713,30 @@ class ResumeOptimizerPipeline(dspy.Module):
                 job_description=job_description,
                 target_pages=self.target_pages,
             )
+            
             phase1_latex = _fix_latex_issues(ats_result.optimized_latex)
+            
         except Exception as e:
-            logger.error(f"Phase 1 (ATS keyword optimization) failed: {e}", exc_info=True)
+            error_type = type(e).__name__
+            error_details = str(e)
+            logger.error(
+                f"Phase 1 (ATS keyword optimization) failed: {error_type}: {error_details}",
+                exc_info=True
+            )
+            # Log additional context for common errors
+            if "API" in error_type or "openai" in error_details.lower():
+                logger.error("Phase 1: This appears to be an OpenAI API error. Check API key and rate limits.")
+            elif "timeout" in error_details.lower():
+                logger.error("Phase 1: Request timed out. Model may be overloaded or response too long.")
+            elif "token" in error_details.lower():
+                logger.error("Phase 1: Token limit exceeded. Resume or job description may be too long.")
+            
             return OptimizationResult(
                 success=False,
                 original_latex=resume_latex,
                 optimized_latex=resume_latex,
                 iterations=0,
-                error_message=f"Phase 1 (ATS keyword optimization) failed: {str(e)}",
+                error_message=f"Phase 1 (ATS keyword optimization) failed: {error_type}: {error_details}",
                 filename=None,
             )
 
@@ -763,11 +776,8 @@ class ResumeOptimizerPipeline(dspy.Module):
                     filename=None,
                 )
 
-        logger.info(f"Phase 1 complete: {phase1_compile.page_count} page(s)")
-
         # Phase 2: Page Reduction (only if needed)
         if phase1_compile.page_count <= self.target_pages:
-            logger.info("Phase 1 result already meets target page count. Skipping Phase 2.")
             final_quality = check_quality(
                 pdf_bytes=phase1_compile.pdf_bytes,
                 target_pages=self.target_pages,
@@ -790,18 +800,20 @@ class ResumeOptimizerPipeline(dspy.Module):
             )
 
         # Phase 2: Length Reduction
-        logger.info(f"Phase 2: Page reduction needed ({phase1_compile.page_count} pages > {self.target_pages} target)")
         current_latex = phase1_latex
         current_compile = phase1_compile
         last_valid_latex = phase1_latex
         last_valid_pdf = phase1_compile.pdf_bytes
         last_quality_result = None
 
+        # Phase 2: Length Reduction
+        logger.info(f"Starting Phase 2: Page reduction (max {self.max_iterations} iterations)")
         for iteration in range(self.max_iterations):
             logger.info(f"Phase 2 iteration {iteration + 1}/{self.max_iterations}")
 
             # Get layout analysis
             current_pages = current_compile.page_count
+            logger.info(f"Current page count: {current_pages} (target: {self.target_pages})")
             
             # Get bullets data with utilization calculated
             # Extract bullets and calculate utilization using same logic as analyze_layout
@@ -867,7 +879,8 @@ class ResumeOptimizerPipeline(dspy.Module):
             )
             
             if not qualifying_bullets_list:
-                logger.warning("No qualifying bullets found. Cannot reduce page count further.")
+                logger.warning(f"No qualifying bullets found in iteration {iteration + 1}. Cannot reduce page count further.")
+                logger.info(f"Phase 2 stopped early at iteration {iteration + 1}/{self.max_iterations} (no qualifying bullets)")
                 break
             
             # Format qualifying bullets for LLM with word count targets
@@ -880,13 +893,35 @@ class ResumeOptimizerPipeline(dspy.Module):
             # Found qualifying bullets to condense (no log needed)
             
             # Call page reducer
-            phase2_result = self.page_reducer(
-                resume_latex=current_latex,
-                target_pages=self.target_pages,
-                current_pages=current_pages,
-                qualifying_bullets=qualifying_bullets_str,
-            )
-            current_latex = _fix_latex_issues(phase2_result.optimized_latex)
+            try:
+                phase2_result = self.page_reducer(
+                    resume_latex=current_latex,
+                    target_pages=self.target_pages,
+                    current_pages=current_pages,
+                    qualifying_bullets=qualifying_bullets_str,
+                )
+                
+                current_latex = _fix_latex_issues(phase2_result.optimized_latex)
+                
+            except Exception as e:
+                error_type = type(e).__name__
+                error_details = str(e)
+                logger.error(
+                    f"Phase 2 iteration {iteration + 1}: DSPy page reducer failed: {error_type}: {error_details}",
+                    exc_info=True
+                )
+                # Log additional context for common errors
+                if "API" in error_type or "openai" in error_details.lower():
+                    logger.error(f"Phase 2 iteration {iteration + 1}: OpenAI API error. Check API key and rate limits.")
+                elif "timeout" in error_details.lower():
+                    logger.error(f"Phase 2 iteration {iteration + 1}: Request timed out.")
+                elif "token" in error_details.lower():
+                    logger.error(f"Phase 2 iteration {iteration + 1}: Token limit exceeded.")
+                
+                # Continue with last valid version
+                logger.warning(f"Phase 2 iteration {iteration + 1}: Reverting to last valid version due to DSPy error")
+                current_latex = last_valid_latex
+                continue
             
             # Compile and validate
             # Compiling LaTeX to PDF (no log needed for each iteration)
@@ -910,7 +945,6 @@ class ResumeOptimizerPipeline(dspy.Module):
             )
             
             if quality_result.passes:
-                logger.info("Optimization complete - all quality criteria met.")
                 return OptimizationResult(
                     success=True,
                     original_latex=resume_latex,
@@ -926,10 +960,10 @@ class ResumeOptimizerPipeline(dspy.Module):
             last_valid_pdf = current_compile.pdf_bytes
             last_quality_result = quality_result
             
-            logger.warning(f"Quality issues remain: {quality_result.issues_summary}")
+            logger.warning(f"Phase 2 iteration {iteration + 1}: Quality issues remain: {quality_result.issues_summary}")
 
         # Max iterations reached - return best effort
-        logger.warning(f"Phase 2 max iterations ({self.max_iterations}) reached")
+        logger.warning(f"Phase 2 completed {self.max_iterations} iterations (max reached)")
         final_compile = compile_latex(current_latex)
         
         if final_compile.success:
@@ -986,16 +1020,20 @@ def configure_dspy(
     max_tokens = max_tokens or settings.max_tokens
     temperature = temperature or settings.temperature
 
-    # DSPy configured (no log needed for production)
-
-    lm = dspy.LM(
-        model=model_name,
-        api_key=api_key,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        cache=False
-    )
-    dspy.configure(lm=lm)
+    try:
+        lm = dspy.LM(
+            model=model_name,
+            api_key=api_key,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            cache=False
+        )
+        dspy.configure(lm=lm)
+    except Exception as e:
+        error_type = type(e).__name__
+        error_details = str(e)
+        logger.error(f"Failed to configure DSPy: {error_type}: {error_details}", exc_info=True)
+        raise
 
 
 def optimize_resume(

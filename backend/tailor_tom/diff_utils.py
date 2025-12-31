@@ -1022,16 +1022,6 @@ def compute_diff(original_latex: str, optimized_latex: str):
                 best_similarity = similarity
                 best_match_idx = opt_idx
         
-        # Debug logging for orig_idx 13
-        if orig_idx == 13:
-            logger.info(f"[DIFF DEBUG orig_idx 13] Best match: opt_idx={best_match_idx}, similarity={best_similarity:.2f}")
-            # Check similarity with opt_idx 12 specifically
-            sim_with_12 = similarity_matrix.get((13, 12), 0.0)
-            logger.info(f"[DIFF DEBUG orig_idx 13] Similarity with opt_idx 12: {sim_with_12:.2f}")
-            # Check what orig_idx 12 is matched to
-            if 12 in matches:
-                logger.info(f"[DIFF DEBUG orig_idx 13] orig_idx 12 is matched to opt_idx {matches[12][0]} with similarity {matches[12][1]:.2f}")
-        
         # Check positional match (same index)
         positional_similarity = similarity_matrix.get((orig_idx, orig_idx), 0.0) if orig_idx < len(optimized_items) else 0.0
         
@@ -1048,15 +1038,11 @@ def compute_diff(original_latex: str, optimized_latex: str):
             use_positional = True
             matches[orig_idx] = (orig_idx, positional_similarity)
             used_opt_indices.add(orig_idx)
-            if orig_idx == 12 or orig_idx == 13:
-                logger.info(f"[DIFF DEBUG] orig_idx {orig_idx} matched to opt_idx {orig_idx} (positional) with similarity {positional_similarity:.2f} (best was {best_similarity:.2f})")
         elif best_similarity > 0.25 and best_match_idx is not None:
             # Use best match, but only if it's not already used
             if best_match_idx not in used_opt_indices:
                 matches[orig_idx] = (best_match_idx, best_similarity)
                 used_opt_indices.add(best_match_idx)
-                if orig_idx == 12 or orig_idx == 13:
-                    logger.info(f"[DIFF DEBUG] orig_idx {orig_idx} matched to opt_idx {best_match_idx} (best) with similarity {best_similarity:.2f}")
             else:
                 # Best match is already used - check if we should "steal" it
                 # Find which original item is currently using it
@@ -1068,10 +1054,6 @@ def compute_diff(original_latex: str, optimized_latex: str):
                         current_user_similarity = o_sim
                         break
                 
-                if orig_idx == 13:
-                    logger.info(f"[DIFF DEBUG orig_idx 13] Best match opt_idx {best_match_idx} is already used by orig_idx {current_user} with similarity {current_user_similarity:.2f}")
-                    logger.info(f"[DIFF DEBUG orig_idx 13] Our similarity with opt_idx {best_match_idx} is {best_similarity:.2f}")
-                
                 # If our similarity is close to the current user's similarity (within 0.1), consider stealing
                 # This handles cases where items are very close in similarity but one is slightly better
                 # We're more lenient here because positional matches can be wrong
@@ -1081,8 +1063,6 @@ def compute_diff(original_latex: str, optimized_latex: str):
                 
                 if should_steal:
                     # Steal the match
-                    if orig_idx == 13:
-                        logger.info(f"[DIFF DEBUG orig_idx 13] STEALING opt_idx {best_match_idx} from orig_idx {current_user} ({best_similarity:.2f} vs {current_user_similarity:.2f})")
                     # Remove old match
                     del matches[current_user]
                     used_opt_indices.remove(best_match_idx)
@@ -1102,11 +1082,6 @@ def compute_diff(original_latex: str, optimized_latex: str):
                     if best_unused_sim_for_user > 0.25 and best_unused_for_user is not None:
                         matches[current_user] = (best_unused_for_user, best_unused_sim_for_user)
                         used_opt_indices.add(best_unused_for_user)
-                        if current_user == 12 or current_user == 13:
-                            logger.info(f"[DIFF DEBUG] orig_idx {current_user} reassigned to opt_idx {best_unused_for_user} with similarity {best_unused_sim_for_user:.2f}")
-                    else:
-                        if current_user == 12 or current_user == 13:
-                            logger.info(f"[DIFF DEBUG] orig_idx {current_user} lost its match and couldn't find a new one")
                 else:
                     # Don't steal - find best unused match
                     best_unused_idx = None
@@ -1122,12 +1097,6 @@ def compute_diff(original_latex: str, optimized_latex: str):
                     if best_unused_similarity > 0.25 and best_unused_idx is not None:
                         matches[orig_idx] = (best_unused_idx, best_unused_similarity)
                         used_opt_indices.add(best_unused_idx)
-                        if orig_idx == 12 or orig_idx == 13:
-                            logger.info(f"[DIFF DEBUG] orig_idx {orig_idx} matched to opt_idx {best_unused_idx} (best unused) with similarity {best_unused_similarity:.2f}")
-                    elif orig_idx == 12 or orig_idx == 13:
-                        logger.info(f"[DIFF DEBUG] orig_idx {orig_idx} could not find a match. Best was opt_idx {best_match_idx} (already used by orig_idx {current_user}, similarity {best_similarity:.2f} vs {current_user_similarity:.2f}), best unused was {best_unused_idx} (similarity {best_unused_similarity:.2f})")
-            if orig_idx == 12 or orig_idx == 13:
-                logger.info(f"[DIFF DEBUG] orig_idx {orig_idx}: used_opt_indices={sorted(used_opt_indices)}")
     
     # Now process all matches
     for orig_idx, orig_item in enumerate(original_items):

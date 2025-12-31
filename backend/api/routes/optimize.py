@@ -8,6 +8,7 @@ from api.models import OptimizationRequest, OptimizationResponse
 from api.storage import create_job
 from api.tasks import optimize_resume_task
 from tailor_tom.latex_compiler import validate_latex
+from tailor_tom.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -64,19 +65,26 @@ async def create_optimization_job(
     )
     
     # Enqueue optimization task to Celery
-    optimize_resume_task.delay(
-        job_id=job_id,
-        resume_latex=request.resume_latex,
-        job_description=request.job_description,
-        target_pages=request.target_pages,
-        max_iterations=request.max_iterations,
-        max_bullet_lines=request.max_bullet_lines,
-        first_name=request.first_name,
-        last_name=request.last_name,
-        company_name=request.company_name,
+    # Route to queue based on CELERY_QUEUE_NAME environment variable
+    # This ensures local backend routes to local worker, hosted backend routes to hosted worker
+    queue_name = settings.celery_queue_name
+    optimize_resume_task.apply_async(
+        args=[],
+        kwargs={
+            'job_id': job_id,
+            'resume_latex': request.resume_latex,
+            'job_description': request.job_description,
+            'target_pages': request.target_pages,
+            'max_iterations': request.max_iterations,
+            'max_bullet_lines': request.max_bullet_lines,
+            'first_name': request.first_name,
+            'last_name': request.last_name,
+            'company_name': request.company_name,
+        },
+        queue=queue_name,
     )
     
-    logger.info(f"Created optimization job {job_id} and enqueued to Celery")
+    logger.info(f"Created optimization job {job_id} and enqueued to Celery queue '{queue_name}'")
     
     return OptimizationResponse(
         job_id=job_id,

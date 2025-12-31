@@ -98,6 +98,11 @@ class Settings(BaseSettings):
         description="Number of concurrent Celery worker processes",
     )
 
+    celery_queue_name: str = Field(
+        default="default",
+        description="Celery queue name for task routing. Use 'local' for local development, 'hosted' for production.",
+    )
+
     # Target Pages (Deprecated: Now configured via frontend settings UI)
     target_pages: int = Field(
         default=1,

@@ -44,6 +44,11 @@ celery_app = Celery(
     broker_connection_retry_on_startup=True,
 )
 
+# Get queue name from settings (default: 'default' for backward compatibility)
+# Set CELERY_QUEUE_NAME=local for local backend/worker
+# Set CELERY_QUEUE_NAME=hosted for hosted backend/worker
+queue_name = settings.celery_queue_name
+
 # Celery configuration
 celery_app.conf.update(
     # Task serialization
@@ -72,6 +77,18 @@ celery_app.conf.update(
     # Worker configuration
     worker_max_tasks_per_child=50,  # Restart worker after 50 tasks (memory management)
     worker_disable_rate_limits=False,
+    
+    # Queue routing configuration
+    # Routes tasks to specific queues based on CELERY_QUEUE_NAME environment variable
+    task_routes={
+        'api.tasks.optimize_resume_task': {
+            'queue': queue_name,
+        },
+    },
+    task_default_queue=queue_name,
+    task_default_exchange='tasks',
+    task_default_exchange_type='direct',
+    task_default_routing_key=queue_name,
 )
 
 logger.info(f"Celery app configured with broker: {redis_url[:20]}...")

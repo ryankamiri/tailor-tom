@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LatexEditor } from '@/components/editor/latex-editor';
 import { getSettings, saveSettings, getResumeLatex, saveResumeLatex, UserSettings } from '@/lib/storage';
+import { validateLatex } from '@/lib/api';
 import { toast } from 'sonner';
 
 export function SettingsForm() {
@@ -20,6 +21,7 @@ export function SettingsForm() {
   });
   const [latex, setLatex] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [isValidating, setIsValidating] = useState(false);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -62,8 +64,28 @@ export function SettingsForm() {
 
   const handleSave = async () => {
     setIsSaving(true);
+    setIsValidating(false);
 
     try {
+      // Validate LaTeX before saving
+      if (latex.trim()) {
+        setIsValidating(true);
+        try {
+          await validateLatex(latex);
+          setIsValidating(false);
+        } catch (validateError) {
+          setIsValidating(false);
+          const errorMessage = validateError instanceof Error 
+            ? validateError.message 
+            : 'Invalid LaTeX syntax';
+          console.error('LaTeX validation failed:', validateError);
+          toast.error(`Cannot save: ${errorMessage}`);
+          setIsSaving(false);
+          return; // Don't save if LaTeX is invalid
+        }
+      }
+
+      // LaTeX is valid (or empty), proceed with saving
       saveSettings(settings);
       saveResumeLatex(latex);
       toast.success('LaTeX template saved successfully!');
@@ -73,6 +95,7 @@ export function SettingsForm() {
       toast.error(errorMessage);
     } finally {
       setIsSaving(false);
+      setIsValidating(false);
     }
   };
 
@@ -188,8 +211,8 @@ export function SettingsForm() {
         <CardContent className="space-y-4">
           <LatexEditor value={latex} onChange={setLatex} height="600px" />
           <div className="flex gap-2">
-            <Button onClick={handleSave} disabled={isSaving}>
-              {isSaving ? 'Saving...' : 'Save LaTeX Template'}
+            <Button onClick={handleSave} disabled={isSaving || isValidating}>
+              {isValidating ? 'Validating LaTeX...' : isSaving ? 'Saving...' : 'Save LaTeX Template'}
             </Button>
           </div>
         </CardContent>

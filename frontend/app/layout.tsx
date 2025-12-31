@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "TailorTom - ATS Resume Optimizer",
+  title: "TailorTom",
   description: "Optimize your LaTeX resume for Applicant Tracking Systems",
 };
 
