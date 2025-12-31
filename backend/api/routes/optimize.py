@@ -11,6 +11,7 @@ from tailor_tom.latex_compiler import validate_latex
 from tailor_tom.config import settings
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.ERROR)  # Only log errors for API endpoints
 router = APIRouter()
 
 
@@ -84,7 +85,6 @@ async def create_optimization_job(
         queue=queue_name,
     )
     
-    logger.info(f"Created optimization job {job_id} and enqueued to Celery queue '{queue_name}'")
     
     return OptimizationResponse(
         job_id=job_id,

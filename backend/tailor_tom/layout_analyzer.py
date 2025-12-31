@@ -10,6 +10,9 @@ from io import BytesIO
 from PyPDF2 import PdfReader
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class QualityResult:
     """Result of quality check on a compiled PDF resume."""
@@ -165,7 +168,12 @@ def _strip_item_text(latex_item: str) -> str:
 
 
 def extract_items_from_latex(latex: str) -> List[Dict]:
-    r"""Extract all \item entries from LaTeX with their text content.
+    r"""Extract all bullet points from LaTeX by parsing command definitions.
+    
+    This function:
+    1. Parses \newcommand and \renewcommand definitions to find commands that expand to \item
+    2. Finds all uses of those commands (both raw \item and custom commands)
+    3. Extracts their content
     
     Args:
         latex: LaTeX source code.
@@ -178,89 +186,397 @@ def extract_items_from_latex(latex: str) -> List[Dict]:
         }
     """
     items = []
+    logger = logging.getLogger(__name__)
     
-    # Extract document content (between \begin{document} and \end{document})
+    # Split into preamble and document body
     if '\\begin{document}' in latex:
-        latex = latex.split('\\begin{document}', 1)[1]
-    if '\\end{document}' in latex:
-        latex = latex.split('\\end{document}', 1)[0]
+        preamble = latex.split('\\begin{document}', 1)[0]
+        document = latex.split('\\begin{document}', 1)[1]
+    else:
+        preamble = ""
+        document = latex
     
-    # Find all \item entries
-    # Pattern matches \item followed by optional whitespace and the content
-    # We need to handle nested braces and environments
+    if '\\end{document}' in document:
+        document = document.split('\\end{document}', 1)[0]
     
-    # CRITICAL: Filter out commented-out \item entries
-    # In LaTeX, % comments out to the end of the line, so we need to check
-    # if the line containing \item starts with %
-    item_pattern = r'\\item\s+'
-    all_matches = list(re.finditer(item_pattern, latex))
+    # Helper function to extract content from a brace group
+    def extract_brace_content(text, start_pos):
+        """Extract content from a brace group starting at start_pos."""
+        if start_pos >= len(text) or text[start_pos] != '{':
+            return None, start_pos
+        depth = 1
+        content_start = start_pos + 1
+        pos = start_pos + 1
+        while pos < len(text) and depth > 0:
+            if text[pos] == '{':
+                depth += 1
+            elif text[pos] == '}':
+                depth -= 1
+            pos += 1
+        if depth == 0:
+            return text[content_start:pos-1], pos
+        return None, pos
     
-    # Filter out matches that are on commented lines
-    valid_matches = []
-    for match in all_matches:
-        match_start = match.start()
-        # Find the start of the line containing this \item
-        line_start = latex.rfind('\n', 0, match_start)
+    # Helper function to check if a line is commented
+    def is_line_commented(text, pos):
+        """Check if the line containing pos starts with a comment."""
+        line_start = text.rfind('\n', 0, pos)
         if line_start == -1:
             line_start = 0
         else:
-            line_start += 1  # Skip the newline character
-        
-        # Get the line text from line_start to match_start
-        line_prefix = latex[line_start:match_start]
-        # Check if the line (after stripping leading whitespace) starts with %
-        # We need to be careful - if there's whitespace before %, it's still a comment
+            line_start += 1
+        line_prefix = text[line_start:pos]
         stripped_prefix = line_prefix.lstrip()
-        # If stripped_prefix is empty, the \item is at the start of the line (not commented)
-        # If stripped_prefix starts with %, the line is commented
-        if not stripped_prefix.startswith('%'):
-            valid_matches.append(match)
+        return stripped_prefix.startswith('%')
     
-    matches = valid_matches
+    # STEP 1: Parse preamble to find commands that expand to \item
+    item_producing_commands = set(['item'])  # Always include raw \item
+    command_arg_counts = {}  # Map command name to number of arguments
     
-    for i, match in enumerate(matches):
-        start_pos = match.end()
+    # Pattern to match \newcommand{\cmd}[n]{definition} or \newcommand{\cmd}{definition}
+    # Also match \renewcommand
+    # Need to handle multi-line definitions with proper brace matching
+    newcommand_pattern = r'\\(?:re)?newcommand\s*\{'
+    
+    pos = 0
+    while True:
+        match = re.search(newcommand_pattern, preamble[pos:])
+        if not match:
+            break
         
-        # Find the end of this item
-        # CRITICAL: Use next \item as the primary boundary (most direct delimiter)
-        # Only use environment boundaries if they come BEFORE the next \item
+        cmd_start = pos + match.end() - 1  # Position of opening brace after \newcommand{
+        pos = pos + match.end()
         
-        end_pos = len(latex)
+        # Extract command name (between braces)
+        cmd_name_match, cmd_name_end = extract_brace_content(preamble, cmd_start)
+        if not cmd_name_match:
+            continue
         
-        # First, check for the next \item (most direct boundary)
-        if i + 1 < len(matches):
-            next_item_pos = matches[i + 1].start()
-            end_pos = next_item_pos
+        cmd_name = cmd_name_match.strip('\\')  # Remove leading backslash if present
         
-        # Then check for environment boundaries that might come before the next item
-        # (to handle cases where we're at the last item in a list)
-        boundaries = [
-            latex.find('\\end{subitems}', start_pos),
-            latex.find('\\end{resume_subsection}', start_pos),
-            latex.find('\\begin{resume_section}', start_pos),
-        ]
-        # Filter out -1 (not found) and find boundaries that come BEFORE end_pos
-        valid_boundaries = [b for b in boundaries if b != -1 and b < end_pos]
-        if valid_boundaries:
-            # Use the earliest valid boundary (closest to start_pos)
-            end_pos = min(valid_boundaries)
+        # Check for optional argument count [n]
+        arg_count = None
+        if cmd_name_end < len(preamble) and preamble[cmd_name_end:cmd_name_end+1] == '[':
+            # Extract number from [n]
+            arg_match = re.match(r'\[(\d+)\]', preamble[cmd_name_end:])
+            if arg_match:
+                arg_count = int(arg_match.group(1))
+                cmd_name_end = cmd_name_end + arg_match.end()
         
-        # Extract the item content
-        item_latex = latex[start_pos:end_pos].strip()
+        # Extract definition body (between braces)
+        if cmd_name_end < len(preamble) and preamble[cmd_name_end:cmd_name_end+1] == '{':
+            definition, def_end = extract_brace_content(preamble, cmd_name_end)
+            if definition:
+                # Check if definition contains \item
+                if r'\item' in definition:
+                    item_producing_commands.add(cmd_name)
+                    # Store argument count (default to 1 if not specified)
+                    command_arg_counts[cmd_name] = arg_count if arg_count is not None else 1
+                    logger.debug(f"Found item-producing command: \\{cmd_name} (expands to \\item, {command_arg_counts[cmd_name]} args)")
         
-        # Remove trailing backslashes and whitespace
-        item_latex = re.sub(r'\\+$', '', item_latex).strip()
-        
-        # Extract clean text
-        item_text = _strip_item_text(item_latex)
-        
-        if item_text:  # Only add non-empty items
-            items.append({
-                "text": item_text,
-                "latex": item_latex,
+        pos = cmd_name_end
+    
+    logger.debug(f"Item-producing commands found: {sorted(item_producing_commands)}")
+    
+    # STEP 2: Find all uses of item-producing commands in document
+    all_item_positions = []
+    
+    # Find raw \item commands
+    for match in re.finditer(r'\\item\s+', document):
+        if not is_line_commented(document, match.start()):
+            all_item_positions.append({
+                "type": "raw_item",
+                "pos": match.start(),
+                "end_pos": match.end(),
+                "match": match,
             })
     
+    # Find custom item-producing commands
+    for cmd_name in item_producing_commands:
+        if cmd_name == 'item':
+            continue  # Already handled above
+        
+        # Pattern: \commandName{...} or \commandName{...}{...} etc.
+        # Need to escape the command name for regex
+        escaped_cmd = re.escape(cmd_name)
+        pattern = rf'\\{escaped_cmd}\s*(?:\n\s*)?\{{'
+        
+        # Get expected argument count for this command
+        expected_args = command_arg_counts.get(cmd_name, 1)  # Default to 1 if not found
+        
+        for match in re.finditer(pattern, document):
+            if is_line_commented(document, match.start()):
+                continue
+            
+            # Extract arguments based on expected count
+            start_pos = match.end() - 1  # Back to the {
+            args = []
+            pos_cursor = start_pos
+            
+            # Extract the expected number of arguments
+            for _ in range(expected_args):
+                arg, pos_cursor = extract_brace_content(document, pos_cursor)
+                if arg is None:
+                    break
+                args.append(arg)
+            
+            # If we got fewer args than expected, that's okay (command might be used incorrectly)
+            # If we got the expected number, use them
+            if args:
+                # Combine all arguments for the item text
+                item_latex = ' '.join(args)
+                item_text = _strip_item_text(item_latex)
+                if item_text:
+                    all_item_positions.append({
+                        "type": "custom",
+                        "pos": match.start(),
+                        "end_pos": pos_cursor,
+                        "cmd_name": cmd_name,
+                        "item_latex": item_latex,
+                        "item_text": item_text,
+                    })
+    
+    # Sort all item positions by their position in document
+    all_item_positions.sort(key=lambda x: x["pos"])
+    
+    # STEP 3: Extract content from each item
+    for i, item_info in enumerate(all_item_positions):
+        if item_info["type"] == "custom":
+            # Custom command - use the already extracted content
+            items.append({
+                "text": item_info["item_text"],
+                "latex": item_info["item_latex"],
+            })
+        else:
+            # Raw \item - extract content
+            match = item_info["match"]
+            start_pos = match.end()
+            
+            # Find the end of this item
+            end_pos = len(document)
+            
+            # Check for next item (raw or custom)
+            if i + 1 < len(all_item_positions):
+                next_item_pos = all_item_positions[i + 1]["pos"]
+                end_pos = next_item_pos
+            
+            # Check for environment boundaries
+            boundaries = [
+                document.find('\\end{itemize}', start_pos),
+                document.find('\\end{enumerate}', start_pos),
+                document.find('\\end{subitems}', start_pos),
+                document.find('\\end{resume_subsection}', start_pos),
+                document.find('\\begin{resume_section}', start_pos),
+            ]
+            valid_boundaries = [b for b in boundaries if b != -1 and b < end_pos]
+            if valid_boundaries:
+                end_pos = min(valid_boundaries)
+            
+            # Extract the item content
+            item_latex = document[start_pos:end_pos].strip()
+            
+            # Remove trailing backslashes and whitespace
+            item_latex = re.sub(r'\\+$', '', item_latex).strip()
+            
+            # Extract clean text
+            item_text = _strip_item_text(item_latex)
+            
+            if item_text:  # Only add non-empty items
+                items.append({
+                    "text": item_text,
+                    "latex": item_latex,
+                })
+    
     return items
+
+
+def _calculate_adaptive_thresholds(all_page_lines: List[Dict], page_rect=None) -> Dict:
+    """Calculate adaptive thresholds based on actual PDF layout.
+    
+    Uses relative thresholds (based on measured line height) instead of
+    absolute points for better generalization across different PDFs.
+    
+    Args:
+        all_page_lines: List of all lines from the PDF page with bbox information.
+        page_rect: Optional page rectangle for page size information.
+        
+    Returns:
+        Dictionary with adaptive thresholds:
+        {
+            "typical_line_height": 12.0,  # Average line height (measured)
+            "line_threshold": 3.0,        # For grouping spans on same line (25% of line height)
+            "typical_line_gap": 6.0,      # Average gap between wrapped lines (50% of line height)
+            "typical_bullet_gap": 15.0,   # Average gap between bullets (125% of line height)
+            "typical_x_indent_tolerance": 10.0,  # Typical X variation for same bullet
+        }
+    """
+    if not all_page_lines or len(all_page_lines) < 2:
+        # Fallback to defaults (relative to typical 12pt font)
+        return {
+            "typical_line_height": 12.0,
+            "line_threshold": 3.0,  # 25% of 12pt
+            "typical_line_gap": 6.0,  # 50% of 12pt
+            "typical_bullet_gap": 15.0,  # 125% of 12pt
+            "typical_x_indent_tolerance": 10.0,
+        }
+    
+    # Calculate line heights
+    line_heights = []
+    for line in all_page_lines:
+        bbox = line.get("bbox", [])
+        if len(bbox) >= 4:
+            height = bbox[3] - bbox[1]  # y1 - y0
+            if height > 0:
+                line_heights.append(height)
+    
+    typical_line_height = sum(line_heights) / len(line_heights) if line_heights else 12.0
+    
+    # Calculate gaps between consecutive lines
+    gaps = []
+    x_diffs = []
+    for i in range(len(all_page_lines) - 1):
+        current = all_page_lines[i]
+        next_line = all_page_lines[i + 1]
+        
+        current_bbox = current.get("bbox", [])
+        next_bbox = next_line.get("bbox", [])
+        
+        if len(current_bbox) >= 4 and len(next_bbox) >= 4:
+            # Vertical gap
+            y_gap = next_bbox[1] - current_bbox[3]  # next y0 - current y1
+            if y_gap > 0:
+                gaps.append(y_gap)
+            
+            # X-indentation difference
+            x_diff = abs(next_bbox[0] - current_bbox[0])
+            if x_diff < 50:  # Only consider similar lines
+                x_diffs.append(x_diff)
+    
+    # Calculate relative thresholds based on line height
+    # Line threshold: 25% of line height (for grouping spans on same line)
+    # This adapts to font size automatically
+    line_threshold = max(2.0, typical_line_height * 0.25)
+    
+    # Separate wrapped lines (small gaps) from new bullets (large gaps)
+    if gaps:
+        sorted_gaps = sorted(gaps)
+        # Wrapped lines: bottom 30% of gaps (smallest gaps)
+        # New bullets: top 30% of gaps (largest gaps)
+        wrapped_line_count = max(1, int(len(sorted_gaps) * 0.3))
+        bullet_gap_count = max(1, int(len(sorted_gaps) * 0.3))
+        
+        typical_line_gap_measured = sum(sorted_gaps[:wrapped_line_count]) / wrapped_line_count if wrapped_line_count > 0 else typical_line_height * 0.5
+        typical_bullet_gap_measured = sum(sorted_gaps[-bullet_gap_count:]) / bullet_gap_count if bullet_gap_count > 0 else typical_line_height * 1.25
+        
+        # Use measured values, but ensure they're reasonable relative to line height
+        # Wrapped lines: should be < 100% of line height (typically 30-80%)
+        typical_line_gap = max(typical_line_height * 0.3, min(typical_line_gap_measured * 2, typical_line_height * 0.8))
+        # Bullet gaps: should be > 100% of line height (typically 100-200%)
+        typical_bullet_gap = max(typical_line_height * 1.0, typical_bullet_gap_measured * 0.8)
+    else:
+        # Fallback: use relative to line height
+        typical_line_gap = typical_line_height * 0.5
+        typical_bullet_gap = typical_line_height * 1.25
+    
+    # X-indentation tolerance: relative to line height (not page width, as it's about text alignment)
+    # This represents how much X-variation is acceptable for the same bullet
+    typical_x_indent_tolerance = sum(x_diffs) / len(x_diffs) if x_diffs else typical_line_height * 0.8
+    # Use 1.5x for safety margin, but ensure minimum is 50% of line height
+    typical_x_indent_tolerance = max(typical_line_height * 0.5, typical_x_indent_tolerance * 1.5)
+    
+    return {
+        "typical_line_height": typical_line_height,
+        "line_threshold": line_threshold,  # For grouping spans on same line
+        "typical_line_gap": typical_line_gap,  # For continuation detection
+        "typical_bullet_gap": typical_bullet_gap,  # For new bullet detection
+        "typical_x_indent_tolerance": typical_x_indent_tolerance,  # For same bullet detection
+    }
+
+
+def _is_likely_continuation(
+    line_text: str,
+    item_text: str,
+    matched_text_so_far: str,
+    y_gap: float,
+    x_indent_diff: float,
+    thresholds: Dict,
+    starts_with_bullet: bool,
+    bullet_marker_x: Optional[float] = None,
+    line_x_start: Optional[float] = None,
+) -> bool:
+    """Check if a line is likely a continuation of the current bullet.
+    
+    Uses multiple signals:
+    1. Positional (gap, indentation)
+    2. Textual (fuzzy match with remaining item text)
+    3. Structural (doesn't start new bullet - checks X position of bullet marker)
+    
+    Args:
+        line_text: Text of the line being checked.
+        item_text: Full text of the LaTeX item.
+        matched_text_so_far: Text that has already been matched.
+        y_gap: Vertical gap from previous line.
+        x_indent_diff: Difference in X-indentation.
+        thresholds: Adaptive thresholds dictionary.
+        starts_with_bullet: Whether line starts with a bullet marker (text-based check).
+        bullet_marker_x: X position of the bullet marker from the initial match (None if not detected).
+        line_x_start: X position where the candidate line starts (None if not available).
+        
+    Returns:
+        True if line is likely a continuation.
+    """
+    # Positional checks
+    is_close_vertically = y_gap >= 0 and y_gap < thresholds["typical_line_gap"]
+    is_similar_indent = x_indent_diff < thresholds["typical_x_indent_tolerance"]
+    
+    # Structural check: doesn't start a new bullet (check this FIRST for early return)
+    # Use X-position-based check if available (more reliable than text-based check)
+    not_new_bullet = True
+    bullet_marker_check = "N/A"
+    if bullet_marker_x is not None and line_x_start is not None:
+        # Check if the line starts at the bullet marker X position
+        # Bullet markers are typically at ~36-50pt, text content starts at ~50-70pt
+        # If line_x_start is close to bullet_marker_x (within 5pt), it's likely a new bullet
+        bullet_marker_tolerance = 5.0  # Allow 5pt tolerance for rendering differences
+        marker_diff = abs(line_x_start - bullet_marker_x)
+        if marker_diff < bullet_marker_tolerance:
+            # Line starts at bullet marker position - this is a NEW bullet, not a continuation
+            not_new_bullet = False
+            # Early return: definitely a new bullet
+            return False
+        # Otherwise, it's likely a continuation (text starts at content position, not bullet position)
+    else:
+        # Fallback to text-based check if X positions not available
+        not_new_bullet = not (starts_with_bullet and x_indent_diff < thresholds["typical_x_indent_tolerance"] * 0.5)
+    
+    # Textual check: does this line match remaining text from LaTeX item?
+    remaining_text = item_text[len(matched_text_so_far):].strip() if matched_text_so_far else item_text
+    text_matches = False  # Default to False (more conservative)
+    text_similarity = 0.0
+    
+    # Check if this is a single-line bullet (no remaining text or very short)
+    is_single_line_bullet = not remaining_text or len(remaining_text) <= 10
+    
+    if is_single_line_bullet:
+        # Single-line bullet - be VERY conservative
+        # Only accept continuation if ALL signals are very strong
+        # For single-line bullets, require ALL signals to pass (not just 2/3)
+        # This prevents false positives where positional signals alone cause acceptance
+        result = is_close_vertically and is_similar_indent and not starts_with_bullet and not_new_bullet
+        return result
+    elif remaining_text and line_text:
+        # Multi-line bullet with substantial remaining text - perform textual matching
+        # Fuzzy match this line against remaining text
+        # Use a longer window to account for text that might be split differently
+        search_window = remaining_text[:min(len(line_text) * 3, len(remaining_text))]
+        text_similarity = SequenceMatcher(None, line_text.lower(), search_window.lower()).ratio()
+        text_matches = text_similarity > 0.5  # Higher threshold - require stronger match (was 0.4)
+    
+    # Combine signals (at least 2 out of 3 must pass)
+    signals = [is_close_vertically, is_similar_indent, text_matches and not_new_bullet]
+    result = sum(signals) >= 2
+    
+    return result
 
 
 def _fuzzy_match_text_in_pdf(doc: fitz.Document, search_text: str, threshold: float = 0.6) -> List[Dict]:
@@ -340,6 +656,13 @@ def _fuzzy_match_text_in_pdf(doc: fitz.Document, search_text: str, threshold: fl
                     "match_type": "line"
                 })
         
+        # Calculate adaptive thresholds from the page layout
+        # Note: page_rect not available in this context, but thresholds are relative to line height anyway
+        page_rect = page.rect if hasattr(page, 'rect') else None
+        thresholds = _calculate_adaptive_thresholds(all_lines, page_rect=page_rect)
+        max_wrap_gap = thresholds["typical_line_gap"]
+        max_x_diff = thresholds["typical_x_indent_tolerance"]
+        
         # Also try matching consecutive lines that might form a bullet point
         # This helps with multi-line bullets, but be more conservative
         # Only combine lines that are close together vertically (likely same bullet)
@@ -349,21 +672,21 @@ def _fuzzy_match_text_in_pdf(doc: fitz.Document, search_text: str, threshold: fl
             combined_text = current_line["text"]
             
             # Try extending with next lines if they're close (likely continuation)
-            # Wrapped lines have VERY small gaps (1-4pt), new bullets have larger gaps (5pt+)
+            # Use adaptive thresholds based on actual PDF layout
             for j in range(i + 1, min(i + 4, len(all_lines))):
                 next_line = all_lines[j]
                 # bbox is [x0, y0, x1, y1] list, not dict
                 current_bbox = current_line["bbox"]
                 next_bbox = next_line["bbox"]
                 
-                # Check if next line is close vertically (within 5pt - very tight for wrapped lines)
+                # Check if next line is close vertically (using adaptive threshold)
                 y_gap = next_bbox[1] - current_bbox[3]  # next y0 - current y1
-                if y_gap > 5 or y_gap < 0:
+                if y_gap > max_wrap_gap or y_gap < 0:
                     break  # Too far or above - not a continuation (likely new bullet)
                 
-                # Check if x position is very similar (wrapped lines should have almost identical x)
+                # Check if x position is similar (using adaptive threshold)
                 x_diff = abs(next_bbox[0] - current_bbox[0])  # next x0 - current x0
-                if x_diff > 8:  # Different indentation - likely new bullet or different section
+                if x_diff > max_x_diff:  # Different indentation - likely new bullet or different section
                     break
                 
                 # Additional check: if next line starts with capital after punctuation,
@@ -374,8 +697,10 @@ def _fuzzy_match_text_in_pdf(doc: fitz.Document, search_text: str, threshold: fl
                     if prev_text and prev_text[-1] in ".!;":
                         # Previous ended with punctuation AND next starts with capital
                         # Even if gap is small, could be new bullet - be conservative
-                        # Only combine if gap is very small (< 3pt)
-                        if y_gap > 3:
+                        # Only combine if gap is very small (< 25% of line height)
+                        # Use a very conservative threshold for this edge case
+                        conservative_gap_threshold = thresholds.get("typical_line_height", 12.0) * 0.25
+                        if y_gap > conservative_gap_threshold:
                             break
                 
                 combined_lines.append(next_line)
@@ -546,7 +871,10 @@ def extract_line_metrics(pdf_bytes: bytes, latex: Optional[str] = None) -> Dict:
                 if not spans:
                     continue
                 
-                # Calculate bounding box
+                # Track matched text to avoid re-matching
+                matched_text_so_far = best_match.get("text", "")
+                
+                # Calculate bounding box from initial match
                 # Ensure all spans have valid bbox (list format: [x0, y0, x1, y1])
                 x_coords = []
                 y_coords = []
@@ -566,8 +894,215 @@ def extract_line_metrics(pdf_bytes: bytes, latex: Optional[str] = None) -> Dict:
                 y_start = min(y_coords)
                 y_end = max(y_coords)
                 
+                # Detect bullet marker X position from initial match
+                # Bullet markers are typically at ~36-50pt, text content starts at ~50-70pt
+                # Strategy: First check initial match spans, then search PDF page directly
+                bullet_marker_x = None
+                bullet_markers = ["•", "-", "·", "▪", "▸"]
+                
+                # Step 1: Check initial match spans for bullet marker
+                for s in spans:
+                    bbox = s.get("bbox", [])
+                    if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+                        span_x = bbox[0]
+                        span_text = s.get("text", "").strip()
+                        # Check if this span is likely the bullet marker:
+                        # 1. X position is in typical bullet range (36-50pt)
+                        # 2. Text is very short (1-2 chars) and matches a bullet marker
+                        if (36 <= span_x <= 50 and 
+                            len(span_text) <= 2 and 
+                            any(span_text.startswith(marker) for marker in bullet_markers)):
+                            bullet_marker_x = span_x
+                            break
+                
+                # Step 2: If not found in initial match, search PDF page directly
+                # Look for bullet markers near the initial match Y position
+                if bullet_marker_x is None:
+                    match_page_num = best_match.get("page", 0)
+                    if match_page_num < len(doc):
+                        page = doc[match_page_num]
+                        text_dict = page.get_text("dict")
+                        
+                        # Search for bullet markers near the initial match Y position
+                        # Check lines within 20pt vertically of the initial match
+                        y_tolerance = 20.0
+                        for block in text_dict.get("blocks", []):
+                            if "lines" in block:
+                                for line in block["lines"]:
+                                    if "spans" in line:
+                                        line_bbox = line.get("bbox", [])
+                                        if len(line_bbox) >= 4:
+                                            line_y_center = (line_bbox[1] + line_bbox[3]) / 2
+                                            # Check if this line is near the initial match
+                                            if abs(line_y_center - y_start) < y_tolerance:
+                                                # Check spans in this line for bullet markers
+                                                for span in line.get("spans", []):
+                                                    span_bbox = span.get("bbox", [])
+                                                    if isinstance(span_bbox, (list, tuple)) and len(span_bbox) >= 4:
+                                                        span_x = span_bbox[0]
+                                                        span_text = span.get("text", "").strip()
+                                                        # Check if this span is a bullet marker
+                                                        if (36 <= span_x <= 50 and 
+                                                            len(span_text) <= 2 and 
+                                                            any(span_text.startswith(marker) for marker in bullet_markers)):
+                                                            bullet_marker_x = span_x
+                                                            break
+                                                if bullet_marker_x is not None:
+                                                    break
+                                    if bullet_marker_x is not None:
+                                        break
+                            if bullet_marker_x is not None:
+                                break
+                
+                # Step 3: Smart fallback if still not found
+                # If x_start > 50, it's likely text content, so bullet marker is probably at ~36-50pt
+                # If x_start <= 50, it might already be the bullet marker position
+                if bullet_marker_x is None:
+                    if x_start > 50:
+                        # Text content position - assume bullet marker is at typical position
+                        bullet_marker_x = 40.0  # Typical bullet marker X position (middle of 36-50 range)
+                    else:
+                        # Might already be bullet marker position, but be conservative
+                        # Use x_start but with a note that it might not be accurate
+                        bullet_marker_x = x_start
+                
+                # EXTEND MATCH: Find continuation lines below the matched text
+                # Get the page where the match was found
+                match_page_num = best_match.get("page", 0)
+                if match_page_num < len(doc):
+                    page = doc[match_page_num]
+                    text_dict = page.get_text("dict")
+                    
+                    # Get all lines from the PDF page
+                    all_page_lines = []
+                    for block in text_dict.get("blocks", []):
+                        if "lines" in block:
+                            for line in block["lines"]:
+                                if "spans" in line:
+                                    line_text = " ".join([span.get("text", "") for span in line.get("spans", [])]).strip()
+                                    if line_text:
+                                        line_bbox = line.get("bbox", [])
+                                        if len(line_bbox) == 4:
+                                            all_page_lines.append({
+                                                "text": line_text,
+                                                "bbox": line_bbox,
+                                                "spans": line.get("spans", []),
+                                            })
+                    
+                    # Calculate adaptive thresholds from the page layout
+                    # Pass page_rect for potential page-size-based calculations
+                    page_rect = page.rect if hasattr(page, 'rect') else None
+                    thresholds = _calculate_adaptive_thresholds(all_page_lines, page_rect=page_rect)
+                    
+                    # Sort lines by Y position (top to bottom - in PDF, Y increases downward)
+                    # So we sort by Y ascending (smallest Y = top of page, largest Y = bottom)
+                    all_page_lines.sort(key=lambda l: l["bbox"][1])
+                    
+                    # Find lines that are continuation of this bullet
+                    continuation_lines = []
+                    current_bottom_y = y_end  # Bottom of matched text (largest Y in the match)
+                    bullet_x_indent = x_start  # X-indentation of the bullet (for comparison with text content)
+                    
+                    # Check if there's a next item to avoid matching into it
+                    next_item_text = None
+                    current_item_idx = None
+                    for idx, it in enumerate(items):
+                        if it["text"] == item_text:
+                            current_item_idx = idx
+                            break
+                    if current_item_idx is not None and current_item_idx + 1 < len(items):
+                        next_item_text = items[current_item_idx + 1]["text"][:100]  # First 100 chars of next item
+                    
+                    # Find the first line that's below our match (Y > current_bottom_y)
+                    # Then check subsequent lines for continuation
+                    # Use strict Y-coordinate checking: only consider lines where line_y_top > y_end
+                    # This ensures we don't accidentally include lines that are part of the initial match
+                    found_match = False
+                    for i, line in enumerate(all_page_lines):
+                        line_y_top = line["bbox"][1]
+                        line_y_bottom = line["bbox"][3]
+                        line_x_start = line["bbox"][0]
+                        line_x_end = line["bbox"][2]
+                        line_text = line["text"]
+                        line_y_center = (line_y_top + line_y_bottom) / 2
+                        line_height = line_y_bottom - line_y_top
+                        
+                        # Check if this line overlaps with or is part of our initial match
+                        # (we want to start looking AFTER the match)
+                        if not found_match:
+                            # STRICT CHECK: Only consider lines that are clearly BELOW the match
+                            # Use y_end (bottom of match) as the threshold - line must start below it
+                            if line_y_top <= y_end:
+                                # Line is at or above the match bottom - skip it (part of match or above)
+                                continue
+                            else:
+                                # Line starts below the match - we've passed it, start looking for continuations
+                                found_match = True
+                        
+                        # Now we're looking at lines below the match
+                        # Check if it's a continuation line using adaptive thresholds
+                        y_gap = line_y_top - current_bottom_y
+                        x_indent_diff = abs(line_x_start - bullet_x_indent)
+                        
+                        starts_with_bullet = any(line_text.strip().startswith(marker) for marker in ["•", "-", "·", "▪", "▸"])
+                        
+                        # Cross-item validation: check if this line belongs to next item
+                        belongs_to_next_item = False
+                        if next_item_text:
+                            next_similarity = SequenceMatcher(None, line_text.lower(), next_item_text.lower()).ratio()
+                            remaining_item_text = item_text[len(matched_text_so_far):].strip() if matched_text_so_far else item_text
+                            if remaining_item_text:
+                                current_similarity = SequenceMatcher(None, line_text.lower(), remaining_item_text[:min(len(line_text)*3, len(remaining_item_text))].lower()).ratio()
+                                # If next item is significantly better match, this line belongs to next bullet
+                                belongs_to_next_item = next_similarity > current_similarity + 0.2
+                        
+                        # Use the improved continuation detection with X-position-based bullet marker check
+                        is_continuation = _is_likely_continuation(
+                            line_text=line_text,
+                            item_text=item_text,
+                            matched_text_so_far=matched_text_so_far,
+                            y_gap=y_gap,
+                            x_indent_diff=x_indent_diff,
+                            thresholds=thresholds,
+                            starts_with_bullet=starts_with_bullet,
+                            bullet_marker_x=bullet_marker_x,
+                            line_x_start=line_x_start,
+                        )
+                        
+                        if is_continuation and not belongs_to_next_item:
+                            # This is a continuation line - add its spans
+                            spans_added = 0
+                            for span in line.get("spans", []):
+                                span_bbox = span.get("bbox", [])
+                                if isinstance(span_bbox, (list, tuple)) and len(span_bbox) >= 4:
+                                    valid_spans.append({
+                                        "text": span.get("text", ""),
+                                        "bbox": span_bbox,
+                                    })
+                                    spans_added += 1
+                            
+                            continuation_lines.append(line)
+                            current_bottom_y = line_y_bottom  # Update bottom for next iteration
+                            matched_text_so_far += " " + line_text  # Track matched text
+                            
+                            # Update bounding box
+                            x_coords.extend([line_x_start, line_x_end])
+                            y_coords.extend([line_y_top, line_y_bottom])
+                        elif y_gap >= thresholds["typical_bullet_gap"] or belongs_to_next_item:
+                            # Gap is too large (new bullet) or line belongs to next item - stop
+                            break
+                    
+                    # Recalculate bounding box with continuation lines
+                    if continuation_lines:
+                        x_start = min(x_coords)
+                        x_end = max(x_coords)
+                        y_start = min(y_coords)
+                        y_end = max(y_coords)
+                
                 # Count lines: group spans by Y-coordinate (similar Y = same line)
-                line_threshold = 3.0
+                # Use adaptive threshold from calculated thresholds (relative to line height)
+                line_threshold = thresholds.get("line_threshold", 3.0)
+                
                 y_groups = defaultdict(list)
                 for span in valid_spans:
                     bbox = span.get("bbox", [])
@@ -584,6 +1119,10 @@ def extract_line_metrics(pdf_bytes: bytes, latex: Optional[str] = None) -> Dict:
                         y_groups[y_center] = [span]
                 
                 line_count = len(y_groups)
+                
+                # DEBUG: Log if we have too many groups (indicates bug)
+                if line_count > 10:
+                    logger.warning(f"Bullet '{item_text[:50]}...': {line_count} Y-groups (expected 1-3), {len(valid_spans)} spans. This suggests spans from wrong lines were included.")
                 
                 # Reconstruct text split by lines for display
                 lines_text = []
@@ -623,12 +1162,10 @@ def extract_line_metrics(pdf_bytes: bytes, latex: Optional[str] = None) -> Dict:
                     last_line_x_coords_start = []
                     last_line_x_coords_end = []
                     
-                    # Debug: Log all spans for first few bullets (FULL text, no truncation)
-                    # Collect all span coordinates (from fuzzy match, so should be correct for this bullet)
+                    # Collect all span coordinates from the last line
                     for s in sorted_spans:
                         bbox = s.get("bbox", [])
-                        
-                        if bbox:
+                        if bbox and len(bbox) >= 4:
                             last_line_x_coords_start.append(bbox[0])
                             last_line_x_coords_end.append(bbox[2])
                     
@@ -643,11 +1180,14 @@ def extract_line_metrics(pdf_bytes: bytes, latex: Optional[str] = None) -> Dict:
                             last_line_x_end = max(last_line_x_coords_end)
                 
                 # Fallback: if we couldn't extract last line coordinates, use overall bullet coordinates
-                # (this should only happen for single-line bullets, which we don't check utilization for anyway)
-                if last_line_x_start is None:
-                    last_line_x_start = x_start
-                if last_line_x_end is None:
-                    last_line_x_end = x_end
+                # Only use fallback if y_groups is empty or we couldn't extract coordinates from y_groups
+                # This should be rare - log a warning if it happens
+                if last_line_x_start is None or last_line_x_end is None:
+                    if y_groups and len(y_groups) > 0:
+                        # We have y_groups but couldn't extract coordinates - this is unexpected
+                        logger.warning(f"Bullet '{item_text[:50]}...': Could not extract last line X coordinates from {len(y_groups)} Y-groups, using fallback")
+                    last_line_x_start = x_start if last_line_x_start is None else last_line_x_start
+                    last_line_x_end = x_end if last_line_x_end is None else last_line_x_end
                 
                 # Final values stored for utilization calculation
                 
@@ -698,8 +1238,28 @@ def extract_line_metrics(pdf_bytes: bytes, latex: Optional[str] = None) -> Dict:
         if not text_spans:
             return {"bullets": []}
         
+        # Calculate adaptive thresholds for PDF-only fallback path
+        # We need to extract lines from the page to calculate thresholds
+        all_page_lines_for_thresholds = []
+        for block in text_dict.get("blocks", []):
+            if "lines" in block:
+                for line in block["lines"]:
+                    if "spans" in line:
+                        line_text = " ".join([span.get("text", "") for span in line.get("spans", [])]).strip()
+                        if line_text:
+                            line_bbox = line.get("bbox", [])
+                            if len(line_bbox) == 4:
+                                all_page_lines_for_thresholds.append({
+                                    "text": line_text,
+                                    "bbox": line_bbox,
+                                })
+        
+        # Calculate adaptive thresholds
+        page_rect = page.rect if hasattr(page, 'rect') else None
+        thresholds = _calculate_adaptive_thresholds(all_page_lines_for_thresholds, page_rect=page_rect)
+        line_threshold = thresholds.get("line_threshold", 3.0)  # Use adaptive threshold
+        
         # Group spans by Y-coordinate (within threshold = same visual line)
-        line_threshold = 3.0  # points - spans within 3pt are considered same line
         y_groups = defaultdict(list)
         
         for span in text_spans:

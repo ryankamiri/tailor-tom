@@ -44,8 +44,265 @@ def _fix_latex_issues(latex: str) -> str:
     fixed = fixed.replace('–', '-')       # en-dash to hyphen
     
     # Fix unescaped & characters (but not in already escaped \&)
-    # Match & that is NOT preceded by \
-    fixed = re.sub(r'(?<!\\)&', r'\\&', fixed)
+    # IMPORTANT: Do NOT escape & in protected contexts:
+    # 1. Tabular/array environments (column separator)
+    # 2. Math mode (alignment character)
+    # 3. Verbatim environments (literal content)
+    # 4. Comments (not processed)
+    
+    def find_environment_content_start(pos, env_end_pos):
+        """Find where environment content actually starts (after \begin{...} and all arguments)."""
+        pos = env_end_pos
+        # Skip whitespace
+        while pos < len(fixed) and fixed[pos].isspace():
+            pos += 1
+        # Parse optional arguments [t], [b], etc.
+        if pos < len(fixed) and fixed[pos] == '[':
+            depth = 1
+            pos += 1
+            while pos < len(fixed) and depth > 0:
+                if fixed[pos] == '[':
+                    depth += 1
+                elif fixed[pos] == ']':
+                    depth -= 1
+                pos += 1
+            while pos < len(fixed) and fixed[pos].isspace():
+                pos += 1
+        # Parse required arguments
+        while pos < len(fixed) and fixed[pos] == '{':
+            depth = 1
+            pos += 1
+            while pos < len(fixed) and depth > 0:
+                if fixed[pos] == '{':
+                    depth += 1
+                elif fixed[pos] == '}':
+                    depth -= 1
+                pos += 1
+            while pos < len(fixed) and fixed[pos].isspace():
+                pos += 1
+        return pos
+    
+    # Track all protected ranges where & should NOT be escaped
+    protected_ranges = []
+    
+    # 1. Tabular/array environments (column separator)
+    tabular_patterns = [
+        r'\\begin\{tabular\*?\}',
+        r'\\begin\{array\}',
+        r'\\begin\{tabularx\}',
+        r'\\begin\{longtabu\}',
+        r'\\begin\{longtable\}',
+        r'\\begin\{xtabular\}',
+        r'\\begin\{supertabular\}',
+        r'\\begin\{tabu\}',
+    ]
+    end_tabular_patterns = [
+        r'\\end\{tabular\*?\}',
+        r'\\end\{array\}',
+        r'\\end\{tabularx\}',
+        r'\\end\{longtabu\}',
+        r'\\end\{longtable\}',
+        r'\\end\{xtabular\}',
+        r'\\end\{supertabular\}',
+        r'\\end\{tabu\}',
+    ]
+    
+    tabular_envs = []
+    for pattern in tabular_patterns:
+        for match in re.finditer(pattern, fixed):
+            content_start = find_environment_content_start(match.start(), match.end())
+            tabular_envs.append({
+                'type': 'begin',
+                'pos': match.start(),
+                'content_start': content_start,
+            })
+    for pattern in end_tabular_patterns:
+        for match in re.finditer(pattern, fixed):
+            tabular_envs.append({
+                'type': 'end',
+                'pos': match.start(),
+            })
+    
+    tabular_envs.sort(key=lambda x: x['pos'])
+    stack = []
+    for env in tabular_envs:
+        if env['type'] == 'begin':
+            stack.append(env['content_start'])
+        else:
+            if stack:
+                protected_ranges.append((stack.pop(), env['pos']))
+    
+    # 2. Math alignment environments (also use & as column separator)
+    math_align_patterns = [
+        r'\\begin\{align\*?\}',
+        r'\\begin\{alignat\*?\}',
+        r'\\begin\{aligned\}',
+        r'\\begin\{eqnarray\*?\}',
+        r'\\begin\{split\}',
+        r'\\begin\{gather\*?\}',
+        r'\\begin\{multline\*?\}',
+    ]
+    end_math_align_patterns = [
+        r'\\end\{align\*?\}',
+        r'\\end\{alignat\*?\}',
+        r'\\end\{aligned\}',
+        r'\\end\{eqnarray\*?\}',
+        r'\\end\{split\}',
+        r'\\end\{gather\*?\}',
+        r'\\end\{multline\*?\}',
+    ]
+    
+    math_align_envs = []
+    for pattern in math_align_patterns:
+        for match in re.finditer(pattern, fixed):
+            content_start = find_environment_content_start(match.start(), match.end())
+            math_align_envs.append({
+                'type': 'begin',
+                'pos': match.start(),
+                'content_start': content_start,
+            })
+    for pattern in end_math_align_patterns:
+        for match in re.finditer(pattern, fixed):
+            math_align_envs.append({
+                'type': 'end',
+                'pos': match.start(),
+            })
+    
+    math_align_envs.sort(key=lambda x: x['pos'])
+    stack = []
+    for env in math_align_envs:
+        if env['type'] == 'begin':
+            stack.append(env['content_start'])
+        else:
+            if stack:
+                protected_ranges.append((stack.pop(), env['pos']))
+    
+    # 3. Inline and display math: $...$, \(...\), \[...\], $$...$$
+    # Track positions already covered by $$ to avoid double-matching
+    dollar_dollar_positions = set()
+    
+    # Handle $$...$$ (display math) first to avoid matching individual $ characters
+    for match in re.finditer(r'(?<!\\)\$\$', fixed):
+        dollar_start = match.start()
+        start_pos = match.end()
+        # Find matching $$
+        end_match = re.search(r'(?<!\\)\$\$', fixed[start_pos:])
+        if end_match:
+            end_pos = start_pos + end_match.start()
+            dollar_end = start_pos + end_match.end()
+            protected_ranges.append((start_pos, end_pos))
+            # Mark all positions in this $$...$$ block (including delimiters)
+            for pos in range(dollar_start, dollar_end):
+                dollar_dollar_positions.add(pos)
+    
+    # Handle $...$ (inline math) - but skip if already part of $$
+    for match in re.finditer(r'(?<!\\)\$', fixed):
+        if match.start() in dollar_dollar_positions:
+            continue  # Skip if already part of $$...$$
+        start_pos = match.end()
+        # Find matching $
+        end_match = re.search(r'(?<!\\)\$', fixed[start_pos:])
+        if end_match:
+            end_pos = start_pos + end_match.start()
+            protected_ranges.append((start_pos, end_pos))
+    
+    # \(...\) (inline math)
+    for match in re.finditer(r'\\\(', fixed):
+        start_pos = match.end()
+        end_match = re.search(r'\\\)', fixed[start_pos:])
+        if end_match:
+            end_pos = start_pos + end_match.start()
+            protected_ranges.append((start_pos, end_pos))
+    
+    # \[...\] (display math)
+    for match in re.finditer(r'\\\[', fixed):
+        start_pos = match.end()
+        end_match = re.search(r'\\\]', fixed[start_pos:])
+        if end_match:
+            end_pos = start_pos + end_match.start()
+            protected_ranges.append((start_pos, end_pos))
+    
+    # 4. Verbatim environments (literal content, no escaping)
+    verbatim_patterns = [
+        r'\\begin\{verbatim\}',
+        r'\\begin\{lstlisting\}',
+        r'\\begin\{alltt\}',
+    ]
+    end_verbatim_patterns = [
+        r'\\end\{verbatim\}',
+        r'\\end\{lstlisting\}',
+        r'\\end\{alltt\}',
+    ]
+    
+    verbatim_envs = []
+    for pattern in verbatim_patterns:
+        for match in re.finditer(pattern, fixed):
+            content_start = find_environment_content_start(match.start(), match.end())
+            verbatim_envs.append({
+                'type': 'begin',
+                'pos': match.start(),
+                'content_start': content_start,
+            })
+    for pattern in end_verbatim_patterns:
+        for match in re.finditer(pattern, fixed):
+            verbatim_envs.append({
+                'type': 'end',
+                'pos': match.start(),
+            })
+    
+    verbatim_envs.sort(key=lambda x: x['pos'])
+    stack = []
+    for env in verbatim_envs:
+        if env['type'] == 'begin':
+            stack.append(env['content_start'])
+        else:
+            if stack:
+                protected_ranges.append((stack.pop(), env['pos']))
+    
+    # 5. \verb|...| commands (inline verbatim)
+    for match in re.finditer(r'\\verb([^\\\s])', fixed):
+        delimiter = match.group(1)
+        start_pos = match.end()
+        # Find matching delimiter (not escaped)
+        end_pos = start_pos
+        while end_pos < len(fixed):
+            if fixed[end_pos] == delimiter and (end_pos == start_pos or fixed[end_pos-1] != '\\'):
+                protected_ranges.append((start_pos, end_pos))
+                break
+            end_pos += 1
+    
+    def is_in_protected_range(pos):
+        """Check if position is in any protected range."""
+        for start, end in protected_ranges:
+            if start <= pos < end:
+                return True
+        return False
+    
+    def is_in_comment(pos):
+        """Check if position is in a LaTeX comment."""
+        # Find start of line
+        line_start = fixed.rfind('\n', 0, pos) + 1
+        # Check if line has % before this position (after whitespace)
+        line_prefix = fixed[line_start:pos].lstrip()
+        return line_prefix.startswith('%')
+    
+    # Escape & characters, but skip those in protected contexts
+    result = []
+    i = 0
+    while i < len(fixed):
+        if fixed[i] == '&' and (i == 0 or fixed[i-1] != '\\'):
+            # Check if this & is in a protected context
+            if is_in_protected_range(i) or is_in_comment(i):
+                # Keep it unescaped
+                result.append('&')
+            else:
+                # Escape it
+                result.append('\\&')
+        else:
+            result.append(fixed[i])
+        i += 1
+    
+    fixed = ''.join(result)
     
     # Fix incomplete commands (missing closing braces)
     # Check for \textbf{ that doesn't have a closing brace
@@ -293,16 +550,24 @@ def _validate_section_preservation(optimized_latex: str, original_latex: str, se
     return True
 
 
-def _filter_qualifying_bullets(layout_analysis: dict, current_pages: int, target_pages: int) -> List[dict]:
+def _filter_qualifying_bullets(
+    layout_analysis: dict, 
+    current_pages: int, 
+    target_pages: int, 
+    max_bullet_lines: int
+) -> List[dict]:
     """Filter bullets that meet Phase 2 criteria for condensation.
     
-    If over target pages, all multi-line bullets qualify (more aggressive).
-    Otherwise, only multi-line bullets with <15% utilization qualify.
+    Bullets qualify if:
+    1. They are too long (> max_bullet_lines), OR
+    2. Resume is over target pages AND bullet is multi-line (2+), OR
+    3. Resume is at/below target pages AND bullet is multi-line (2+) with low utilization (<15%)
     
     Args:
         layout_analysis: Dictionary containing bullets data.
         current_pages: Current page count.
         target_pages: Target page count.
+        max_bullet_lines: Maximum allowed lines per bullet.
         
     Returns:
         List of bullet dictionaries that meet the criteria.
@@ -316,19 +581,25 @@ def _filter_qualifying_bullets(layout_analysis: dict, current_pages: int, target
         line_count = bullet.get("line_count", 0)
         utilization = bullet.get("last_line_utilization_percent", 100)
         
-        # If over target pages, condense ALL multi-line bullets (more aggressive)
-        if over_target:
-            if line_count >= 2:
-                qualifying.append(bullet)
-        else:
-            # Normal criteria: multi-line (2+) AND low utilization (<15%)
-            if line_count >= 2 and (utilization is None or utilization < 15):
-                qualifying.append(bullet)
+        # Priority 1: Bullets that are too long (> max_bullet_lines) - always qualify
+        if line_count > max_bullet_lines:
+            qualifying.append(bullet)
+        # Priority 2: If over target pages, condense ALL multi-line bullets (more aggressive)
+        elif over_target and line_count >= 2:
+            qualifying.append(bullet)
+        # Priority 3: Normal criteria: multi-line (2+) AND low utilization (<15%)
+        elif line_count >= 2 and (utilization is None or utilization < 15):
+            qualifying.append(bullet)
     
     return qualifying
 
 
-def _format_qualifying_bullets(bullets: List[dict], current_pages: int, target_pages: int) -> str:
+def _format_qualifying_bullets(
+    bullets: List[dict], 
+    current_pages: int, 
+    target_pages: int, 
+    max_bullet_lines: int
+) -> str:
     """Format qualifying bullets for LLM consumption with actual line-by-line breakdown.
     
     Shows bullets with their actual rendered line breaks (where LaTeX automatically wraps)
@@ -338,6 +609,7 @@ def _format_qualifying_bullets(bullets: List[dict], current_pages: int, target_p
         bullets: List of bullet dictionaries from layout analysis (must have 'lines_text' field).
         current_pages: Current page count.
         target_pages: Target page count.
+        max_bullet_lines: Maximum allowed lines per bullet.
         
     Returns:
         Formatted string showing each bullet with its line-by-line breakdown and context.
@@ -348,10 +620,16 @@ def _format_qualifying_bullets(bullets: List[dict], current_pages: int, target_p
     lines.append("=" * 80)
     lines.append("QUALIFYING BULLETS FOR CONDENSATION")
     lines.append("=" * 80)
+    
+    # Identify why bullets qualify
+    long_bullets = [b for b in bullets if b.get("line_count", 0) > max_bullet_lines]
+    if long_bullets:
+        lines.append(f"These bullets are TOO LONG (> {max_bullet_lines} lines) and must be condensed.")
     if over_target:
-        lines.append(f"Resume is {current_pages} pages (target: {target_pages}). ALL multi-line bullets must be condensed.")
-    else:
+        lines.append(f"Resume is {current_pages} pages (target: {target_pages}). Multi-line bullets must be condensed to reduce page count.")
+    if not long_bullets and not over_target:
         lines.append("These bullets are multi-line (2+ lines) with low last-line utilization (<15%).")
+    
     lines.append("You must condense these bullets to n-1 lines by removing words/content.")
     lines.append("")
     lines.append("IMPORTANT: Each bullet below shows its ACTUAL rendered line breaks.")
@@ -511,12 +789,18 @@ class OptimizeATSKeywords(dspy.Signature):
     - BAD: "built a database system" -> "built system" (REMOVED content - FORBIDDEN)
     - BAD: Combining two bullets into one - FORBIDDEN
     
-    LaTeX RESTRICTIONS:
-    - ONLY edit \\item content - no other LaTeX commands, environments, or structure can be changed
-    - DO NOT modify: \\begin{}, \\end{}, \\textbf{}, \\textit{}, \\section{}, etc.
-    - DO NOT modify: section environments, formatting commands, preamble
+    LaTeX RESTRICTIONS - CRITICAL: ONLY EDIT TEXT CONTENT:
+    - ONLY edit the TEXT CONTENT within bullet points - identify bullet points by their structure (they may use \\item, \\resumeItem, or any custom command)
+    - DO NOT modify ANY LaTeX commands, environments, or structure - ONLY the text words
+    - DO NOT modify: \\begin{}, \\end{}, \\textbf{}, \\textit{}, \\section{}, \\item, \\resumeItem, or ANY commands
+    - DO NOT modify: section environments, formatting commands, preamble, custom commands, or ANY LaTeX structure
     - DO NOT modify: Skills section LaTeX structure (nospacetabbing, \\=, \\\\, \\>, \\underline)
-    - ONLY change the text within \\item{} commands
+    - DO NOT modify: tabular environments, table structures, or ANY formatting
+    - ONLY change the actual text words within bullet point content - preserve ALL LaTeX commands exactly as-is
+    - Example: If bullet is "\\item{Built a database}" -> "\\item{Developed a PostgreSQL database}" (changed words, kept \\item{} exactly)
+    - Example: If bullet is "\\resumeItem{Built a database}" -> "\\resumeItem{Developed a PostgreSQL database}" (changed words, kept \\resumeItem{} exactly)
+    - BAD: "\\item{Built}" -> "\\textbf{\\item{Built}}" (added command - FORBIDDEN)
+    - BAD: "\\item{Built}" -> "Built" (removed command - FORBIDDEN)
     
     SECTION RESTRICTIONS:
     - SKILLS SECTION: Do NOT edit, modify, or change in ANY way - leave EXACTLY as-is
@@ -524,23 +808,37 @@ class OptimizeATSKeywords(dspy.Signature):
     - EDitable sections: Work Experience, Personal Projects, Certifications, and other sections
     - When editing Work Experience or Projects: Only edit \\item content, not company names, titles, dates, or section structure
     
-    KEYWORD INTEGRATION STRATEGY:
-    - Read the job description carefully and extract ALL relevant keywords:
+    KEYWORD INTEGRATION STRATEGY - VARIETY OVER REPETITION:
+    - Read the job description carefully and extract ALL relevant keywords and their synonyms:
       * Technologies (e.g., "PostgreSQL", "React", "Kubernetes", "DSPy")
       * Skills (e.g., "machine learning", "data analysis", "API development")
       * Action verbs (e.g., "developed", "architected", "optimized", "deployed")
       * Domain terms (e.g., "microservices", "distributed systems", "CI/CD")
-    - Replace generic terms with specific keywords:
-      * "built" -> "developed" or "architected" (if appropriate)
-      * "database" -> "PostgreSQL" or "MongoDB" (if specific technology used)
-      * "AI system" -> "LLM pipeline" or "ML model" (if appropriate)
-      * "worked on" -> "analyzed" or "implemented" (be specific)
-    - Use both full terms and acronyms appropriately:
-      * "Machine Learning" -> "ML" (if context allows)
-      * "Large Language Model" -> "LLM" (if context allows)
-      * But maintain clarity - don't over-abbreviate
+    
+    - CRITICAL: PRIORITIZE KEYWORD VARIETY - AVOID EXCESSIVE REPETITION:
+      * DO NOT repeat the same keyword more than 2-3 times throughout the entire resume
+      * Instead, use synonyms and related terms to show the same skills:
+        - "RESTful APIs" -> also use "REST APIs", "web APIs", "API development", "API services"
+        - "machine learning" -> also use "ML", "ML models", "predictive analytics", "data science"
+        - "developed" -> also use "architected", "built", "engineered", "implemented", "created"
+        - "database" -> also use "PostgreSQL", "MongoDB", "data store", "persistence layer"
+      * Use semantic variations: "API" can become "RESTful services", "web services", "endpoints", "API endpoints"
+      * Natural integration: Keywords should fit naturally in context, not feel forced
+    
+    - Replace generic terms with specific keywords (use variety):
+      * "built" -> "developed", "architected", "engineered" (rotate these, don't always use the same one)
+      * "database" -> "PostgreSQL", "MongoDB", "data store" (use different terms in different bullets)
+      * "AI system" -> "LLM pipeline", "ML model", "AI solution" (vary the terminology)
+      * "worked on" -> "analyzed", "implemented", "designed", "optimized" (use different action verbs)
+    
+    - Use both full terms and acronyms appropriately (but vary them):
+      * "Machine Learning" -> use "ML" in some places, "machine learning" in others, "ML models" elsewhere
+      * "Large Language Model" -> use "LLM" in some places, "language models" in others
+      * "RESTful API" -> use "REST APIs", "RESTful services", "web APIs" - don't repeat the same phrase
+    
     - Make MANY keyword changes throughout editable sections (aim for 10-20+ keyword integrations)
     - Maintain semantic meaning - the content must remain truthful and accurate
+    - Natural language: The resume should read naturally to human reviewers, not like keyword stuffing
     
     WORD COUNT:
     - Keep word count approximately the same (minor variations OK, but no significant expansion)
@@ -548,28 +846,29 @@ class OptimizeATSKeywords(dspy.Signature):
     - Example: "worked on database systems" -> "architected PostgreSQL databases" (added "PostgreSQL", removed "worked on", changed "systems" to "databases")
     
     FORMATTING - PRESERVE ALL LaTeX STRUCTURE EXACTLY:
-    - Preserve LaTeX structure EXACTLY: \\begin{}, \\end{}, \\textbf{}, etc.
+    - Preserve ALL LaTeX structure EXACTLY: \\begin{}, \\end{}, \\textbf{}, \\item, \\resumeItem, or ANY commands
     - Keep ALL special characters: $|$ (pipe), \\& (ampersand), etc.
     - DO NOT remove LaTeX comments (lines starting with %)
     - DO NOT remove whitespace or reformat LaTeX code
     - DO NOT simplify or "clean up" LaTeX structure
-    - ONLY change the text content inside \\item{} commands, NOT the commands themselves
-    - Preserve ALL LaTeX environments, formatting, preamble, and structure exactly as-is
+    - ONLY change the actual text words within bullet point content - identify bullets by their structure (may use \\item, \\resumeItem, or any custom command)
+    - Preserve ALL LaTeX environments, formatting, preamble, custom commands, and structure exactly as-is
     - HEADER: Keep header (name, contact info) on SAME LINE - do not split across lines
+    - REMEMBER: Different resumes use different bullet commands - work with whatever command is used, but ONLY edit the text content inside it
     """
     
     resume_latex: str = dspy.InputField(desc="Resume in LaTeX format")
     job_description: str = dspy.InputField(desc="Job description - extract keywords and integrate them through word replacement")
     target_pages: int = dspy.InputField(desc="Target page count (keep in mind when making changes, but prioritize keyword integration)")
-    optimized_latex: str = dspy.OutputField(desc="Resume with ATS keywords integrated through word-level replacements. Content preserved exactly, only wording changed. Only \\item content modified. Skills and Education sections unchanged. Bullet structure preserved - do not combine bullets.")
+    optimized_latex: str = dspy.OutputField(desc="Resume with ATS keywords integrated through word-level replacements with VARIETY. Use synonyms and related terms - avoid repeating the same keyword more than 2-3 times. Content preserved exactly, only wording changed. ONLY text content within bullet points modified (regardless of whether bullets use \\item, \\resumeItem, or any custom command). ALL LaTeX structure, commands, and formatting preserved exactly. Skills and Education sections unchanged. Bullet structure preserved - do not combine bullets. Natural language - should read well to human reviewers.")
 
 
-class ReducePageCount(dspy.Signature):
-    r"""Reduce resume page count by condensing qualifying bullets.
+class CondenseLongBullets(dspy.Signature):
+    r"""Condense long bullets to improve resume quality and reduce page count.
     
-    YOUR GOAL: Condense qualifying bullets to reduce page count. This is the ONLY time content removal is allowed.
-    Follow the word removal targets specified for each bullet closely - these are estimates of how many words
-    need to be removed to reduce the bullet from n lines to n-1 lines.
+    YOUR GOAL: Condense qualifying bullets that are too long (>max_bullet_lines) or need reduction for page count.
+    This is the ONLY time content removal is allowed. Follow the word removal targets specified for each bullet closely - 
+    these are estimates of how many words need to be removed to reduce the bullet from n lines to n-1 lines.
     
     ================================================================================
     CRITICAL CONSTRAINTS (HIGHEST PRIORITY):
@@ -579,7 +878,10 @@ class ReducePageCount(dspy.Signature):
     - ONLY edit bullets that are listed in qualifying_bullets
     - ALL other bullets must remain EXACTLY unchanged
     - Do NOT edit single-line bullets
-    - If resume is over target pages, ALL multi-line bullets are qualifying (more aggressive condensation needed)
+    - Bullets qualify if they are:
+      * Too long (> max_bullet_lines), OR
+      * Resume is over target pages AND bullet is multi-line (2+), OR
+      * Resume is at/below target pages AND bullet is multi-line (2+) with low utilization (<15%)
     
     CONTENT REMOVAL ALLOWED:
     - This is the ONLY time content removal is allowed
@@ -594,11 +896,17 @@ class ReducePageCount(dspy.Signature):
     - Preserve the same number of bullets - if there were 5 bullets, there must still be 5 bullets
     - Only condense individual bullets, do not merge them together
     
-    LaTeX RESTRICTIONS:
-    - ONLY edit \\item content for qualifying bullets
-    - DO NOT modify any other LaTeX: \\begin{}, \\end{}, \\textbf{}, etc.
-    - DO NOT modify section structure, formatting, or environments
-    - ONLY change text within \\item{} commands for qualifying bullets
+    LaTeX RESTRICTIONS - CRITICAL: ONLY EDIT TEXT CONTENT:
+    - ONLY edit the TEXT CONTENT within qualifying bullet points - identify bullets by their structure (they may use \\item, \\resumeItem, or any custom command)
+    - DO NOT modify ANY LaTeX commands, environments, or structure - ONLY the text words
+    - DO NOT modify: \\begin{}, \\end{}, \\textbf{}, \\item, \\resumeItem, or ANY commands
+    - DO NOT modify section structure, formatting, environments, custom commands, or ANY LaTeX structure
+    - ONLY change the actual text words within qualifying bullet point content - preserve ALL LaTeX commands exactly as-is
+    - Example: If bullet is "\\item{Built a database system}" -> "\\item{Built a PostgreSQL database}" (removed words, kept \\item{} exactly)
+    - Example: If bullet is "\\resumeItem{Built a database system}" -> "\\resumeItem{Built a PostgreSQL database}" (removed words, kept \\resumeItem{} exactly)
+    - BAD: "\\item{Built}" -> "\\textbf{\\item{Built}}" (added command - FORBIDDEN)
+    - BAD: "\\item{Built}" -> "Built" (removed command - FORBIDDEN)
+    - REMEMBER: Different resumes use different bullet commands - work with whatever command is used, but ONLY edit the text content inside it
     
     SECTION RESTRICTIONS:
     - EDUCATION SECTION: Do NOT edit any bullets in Education section (even if they qualify)
@@ -616,20 +924,21 @@ class ReducePageCount(dspy.Signature):
     - Be AGGRESSIVE - remove the full word count target (or close to it) to ensure the bullet actually reduces in line count
     
     FORMATTING - PRESERVE ALL LaTeX STRUCTURE EXACTLY:
-    - Preserve LaTeX structure EXACTLY: \\begin{}, \\end{}, \\textbf{}, etc.
+    - Preserve ALL LaTeX structure EXACTLY: \\begin{}, \\end{}, \\textbf{}, \\item, \\resumeItem, or ANY commands
     - Keep ALL special characters: $|$ (pipe), \\& (ampersand), etc.
     - DO NOT remove LaTeX comments (lines starting with %)
     - DO NOT remove whitespace or reformat LaTeX code
     - DO NOT simplify or "clean up" LaTeX structure
-    - ONLY change the text content inside \\item{} commands for qualifying bullets, NOT the commands themselves
-    - Preserve ALL LaTeX environments, formatting, preamble, and structure exactly as-is
+    - ONLY change the actual text words within qualifying bullet point content - identify bullets by their structure (may use \\item, \\resumeItem, or any custom command)
+    - Preserve ALL LaTeX environments, formatting, preamble, custom commands, and structure exactly as-is
+    - REMEMBER: Different resumes use different bullet commands - work with whatever command is used, but ONLY edit the text content inside it
     """
     
     resume_latex: str = dspy.InputField(desc="Resume in LaTeX format")
     target_pages: int = dspy.InputField(desc="Target number of pages")
     current_pages: int = dspy.InputField(desc="Current page count")
     qualifying_bullets: str = dspy.InputField(desc="Detailed breakdown of qualifying bullets with their ACTUAL rendered line breaks (showing where LaTeX wraps text). Each bullet shows its multi-line structure with line-by-line text, word counts, and removal targets.")
-    optimized_latex: str = dspy.OutputField(desc="Resume with qualifying bullets condensed to n-1 lines. Only qualifying bullets modified. All LaTeX structure preserved except \\item content for qualifying bullets. Bullet structure preserved - do not combine bullets.")
+    optimized_latex: str = dspy.OutputField(desc="Resume with qualifying bullets condensed to n-1 lines. Only qualifying bullets modified. ONLY text content within qualifying bullet points modified (regardless of whether bullets use \\item, \\resumeItem, or any custom command). ALL LaTeX structure, commands, and formatting preserved exactly. Bullet structure preserved - do not combine bullets.")
 
 
 # =============================================================================
@@ -665,7 +974,7 @@ class ResumeOptimizerPipeline(dspy.Module):
     """Main pipeline for optimizing resumes with two-phase approach.
 
     Phase 1: ATS Keyword Integration
-    Phase 2: Page Reduction (if needed)
+    Phase 2: Bullet Condensation (if needed - for long bullets or page reduction)
     """
 
     def __init__(
@@ -677,7 +986,7 @@ class ResumeOptimizerPipeline(dspy.Module):
         """Initialize the optimizer pipeline.
 
         Args:
-            max_iterations: Maximum iterations for Phase 2 (length reduction) (default: 3).
+            max_iterations: Maximum iterations for Phase 2 (bullet condensation) (default: 3).
             target_pages: Target number of pages for the resume (default: 1).
             max_bullet_lines: Maximum lines per bullet point (default: 2).
         """
@@ -690,7 +999,7 @@ class ResumeOptimizerPipeline(dspy.Module):
         # Two separate optimizers for two-phase approach
         # Using ChainOfThought for better quality: improved keyword integration, professional language, and job description alignment
         self.ats_optimizer = dspy.ChainOfThought(OptimizeATSKeywords)
-        self.page_reducer = dspy.ChainOfThought(ReducePageCount)
+        self.bullet_condenser = dspy.ChainOfThought(CondenseLongBullets)
 
     def forward(
         self,
@@ -776,44 +1085,40 @@ class ResumeOptimizerPipeline(dspy.Module):
                     filename=None,
                 )
 
-        # Phase 2: Page Reduction (only if needed)
-        if phase1_compile.page_count <= self.target_pages:
-            final_quality = check_quality(
-                pdf_bytes=phase1_compile.pdf_bytes,
-                target_pages=self.target_pages,
-                max_bullet_lines=self.max_bullet_lines,
-                latex=phase1_latex,
-            )
-            
+        # Phase 2: Bullet Condensation (check if needed)
+        phase1_quality = check_quality(
+            pdf_bytes=phase1_compile.pdf_bytes,
+            target_pages=self.target_pages,
+            max_bullet_lines=self.max_bullet_lines,
+            latex=phase1_latex,
+        )
+        
+        # Run Phase 2 if: (1) over target pages OR (2) has quality issues (e.g., long bullets)
+        if phase1_compile.page_count <= self.target_pages and phase1_quality.passes:
+            # Already at target pages and no quality issues - return early
             return OptimizationResult(
-                success=final_quality.passes,
+                success=True,
                 original_latex=resume_latex,
                 optimized_latex=phase1_latex,
                 pdf_bytes=phase1_compile.pdf_bytes,
-                page_count=final_quality.page_count,
+                page_count=phase1_quality.page_count,
                 iterations=1,
-                error_message=(
-                    f"Quality issues remain: {final_quality.issues_summary}"
-                    if not final_quality.passes else None
-                ),
+                error_message=None,
                 filename=None,
             )
 
-        # Phase 2: Length Reduction
+        # Phase 2: Bullet Condensation
         current_latex = phase1_latex
         current_compile = phase1_compile
         last_valid_latex = phase1_latex
         last_valid_pdf = phase1_compile.pdf_bytes
-        last_quality_result = None
+        last_quality_result = phase1_quality
 
-        # Phase 2: Length Reduction
-        logger.info(f"Starting Phase 2: Page reduction (max {self.max_iterations} iterations)")
+        # Phase 2: Bullet Condensation
+        phase2_iterations_completed = 0
         for iteration in range(self.max_iterations):
-            logger.info(f"Phase 2 iteration {iteration + 1}/{self.max_iterations}")
-
             # Get layout analysis
             current_pages = current_compile.page_count
-            logger.info(f"Current page count: {current_pages} (target: {self.target_pages})")
             
             # Get bullets data with utilization calculated
             # Extract bullets and calculate utilization using same logic as analyze_layout
@@ -871,16 +1176,16 @@ class ResumeOptimizerPipeline(dspy.Module):
             finally:
                 doc.close()
             
-            # Filter qualifying bullets (more aggressive if over target pages)
+            # Filter qualifying bullets (includes long bullets and page reduction candidates)
             qualifying_bullets_list = _filter_qualifying_bullets(
                 {"bullets": bullets_data},
                 current_pages=current_pages,
                 target_pages=self.target_pages,
+                max_bullet_lines=self.max_bullet_lines,
             )
             
             if not qualifying_bullets_list:
-                logger.warning(f"No qualifying bullets found in iteration {iteration + 1}. Cannot reduce page count further.")
-                logger.info(f"Phase 2 stopped early at iteration {iteration + 1}/{self.max_iterations} (no qualifying bullets)")
+                phase2_iterations_completed = iteration + 1
                 break
             
             # Format qualifying bullets for LLM with word count targets
@@ -888,13 +1193,14 @@ class ResumeOptimizerPipeline(dspy.Module):
                 qualifying_bullets_list,
                 current_pages=current_pages,
                 target_pages=self.target_pages,
+                max_bullet_lines=self.max_bullet_lines,
             )
             
             # Found qualifying bullets to condense (no log needed)
             
-            # Call page reducer
+            # Call bullet condenser
             try:
-                phase2_result = self.page_reducer(
+                phase2_result = self.bullet_condenser(
                     resume_latex=current_latex,
                     target_pages=self.target_pages,
                     current_pages=current_pages,
@@ -907,7 +1213,7 @@ class ResumeOptimizerPipeline(dspy.Module):
                 error_type = type(e).__name__
                 error_details = str(e)
                 logger.error(
-                    f"Phase 2 iteration {iteration + 1}: DSPy page reducer failed: {error_type}: {error_details}",
+                    f"Phase 2 iteration {iteration + 1}: DSPy bullet condenser failed: {error_type}: {error_details}",
                     exc_info=True
                 )
                 # Log additional context for common errors
@@ -959,11 +1265,8 @@ class ResumeOptimizerPipeline(dspy.Module):
             last_valid_latex = current_latex
             last_valid_pdf = current_compile.pdf_bytes
             last_quality_result = quality_result
-            
-            logger.warning(f"Phase 2 iteration {iteration + 1}: Quality issues remain: {quality_result.issues_summary}")
+            phase2_iterations_completed = iteration + 1
 
-        # Max iterations reached - return best effort
-        logger.warning(f"Phase 2 completed {self.max_iterations} iterations (max reached)")
         final_compile = compile_latex(current_latex)
         
         if final_compile.success:

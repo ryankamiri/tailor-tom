@@ -8,6 +8,7 @@ from api.storage import get_job, update_job_status, delete_job
 from api.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.ERROR)  # Only log errors for API endpoints
 router = APIRouter()
 
 
@@ -76,7 +77,7 @@ async def cancel_job(job_id: str):
         # For now, we'll just mark it as cancelled and let the task check the status
         pass
     except Exception as e:
-        logger.warning(f"Failed to revoke Celery task for job {job_id}: {e}")
+        logger.error(f"Failed to revoke Celery task for job {job_id}: {e}")
     
     # Update job status to cancelled
     update_job_status(
@@ -85,8 +86,6 @@ async def cancel_job(job_id: str):
         completed_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
         error_message="Job cancelled by user",
     )
-    
-    logger.info(f"Job {job_id} cancelled by user")
     
     return {"job_id": job_id, "status": "failed", "message": "Job cancelled successfully"}
 
@@ -98,7 +97,6 @@ async def delete_job_endpoint(job_id: str):
     job = get_job(job_id)
     if not job:
         # Job doesn't exist - return success (idempotent operation)
-        logger.info(f"Job {job_id} not found (may have already been deleted)")
         return {"job_id": job_id, "message": "Job deleted successfully"}
     
     if job["status"] in ["pending", "processing"]:
@@ -109,8 +107,6 @@ async def delete_job_endpoint(job_id: str):
     
     # Delete job from Redis
     delete_job(job_id)
-    
-    logger.info(f"Job {job_id} deleted")
     
     return {"job_id": job_id, "message": "Job deleted successfully"}
 

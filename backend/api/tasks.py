@@ -8,6 +8,7 @@ from tailor_tom.optimizer import optimize_resume, configure_dspy
 from tailor_tom.config import settings
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.ERROR)  # Only log errors for Celery tasks
 
 
 @celery_app.task(bind=True, name="api.tasks.optimize_resume_task")
@@ -39,27 +40,22 @@ def optimize_resume_task(
         company_name: Company name for filename
     """
     try:
-        logger.info(f"[optimize_resume_task] Starting optimization for job {job_id}")
-        
         # Check if job was cancelled
         job = get_job(job_id)
         if not job:
-            logger.warning(f"[optimize_resume_task] Job {job_id} not found, skipping")
+            logger.error(f"[optimize_resume_task] Job {job_id} not found, skipping")
             return
         
         if job.get("status") == "failed" and job.get("error_message") == "Job cancelled by user":
-            logger.info(f"[optimize_resume_task] Job {job_id} was cancelled, skipping")
             return
         
         # Update status to processing
         update_job_status(job_id, "processing")
         
         # Configure DSPy in this worker process (DSPy settings are process-local)
-        logger.debug(f"[optimize_resume_task] Configuring DSPy for job {job_id}")
         configure_dspy()
         
         # Run optimization
-        logger.debug(f"[optimize_resume_task] Running optimize_resume for job {job_id}")
         result = optimize_resume(
             resume_latex=resume_latex,
             job_description=job_description,
@@ -67,8 +63,6 @@ def optimize_resume_task(
             max_iterations=max_iterations,
             max_bullet_lines=max_bullet_lines,
         )
-        
-        logger.info(f"[optimize_resume_task] Optimization completed for job {job_id}, success={result.success}")
         
         if result.success:
             # Generate filename using provided company name (Title_Case format)
@@ -88,8 +82,6 @@ def optimize_resume_task(
                 },
                 company_name=company_name,
             )
-            
-            logger.info(f"[optimize_resume_task] Job {job_id} completed successfully")
         else:
             # Update job with error
             error_message = result.error_message or "Optimization failed"

@@ -10,6 +10,7 @@ from tailor_tom.diff_utils import compute_diff, create_annotated_diff_pdfs
 from tailor_tom.latex_compiler import compile_latex
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.ERROR)  # Only log errors for API endpoints
 router = APIRouter()
 
 

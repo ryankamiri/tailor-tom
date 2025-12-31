@@ -8,6 +8,7 @@ import redis
 from tailor_tom.config import settings
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.ERROR)  # Only log errors
 
 # Redis client instance
 _redis_client: Optional[redis.Redis] = None
@@ -27,7 +28,6 @@ def get_redis_client() -> redis.Redis:
             )
             # Test connection
             _redis_client.ping()
-            logger.info("Connected to Redis successfully")
         except Exception as e:
             logger.error(f"Failed to connect to Redis: {e}")
             raise
@@ -75,8 +75,6 @@ def create_job(job_id: str, job_data: Dict[str, Any]) -> None:
     # Store as hash
     client.hset(key, mapping=job_data_copy)
     client.expire(key, ttl_seconds)
-    
-    logger.debug(f"Created job {job_id} in Redis with TTL {settings.redis_ttl_days} days")
 
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
@@ -107,7 +105,7 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
         try:
             job_data["result"] = json.loads(job_data["result"])
         except json.JSONDecodeError:
-            logger.warning(f"Failed to parse result JSON for job {job_id}")
+            logger.error(f"Failed to parse result JSON for job {job_id}")
             job_data["result"] = None
     
     # Convert numeric fields (handle empty strings safely)
@@ -115,14 +113,14 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
         try:
             job_data["target_pages"] = int(job_data["target_pages"])
         except (ValueError, TypeError):
-            logger.warning(f"Invalid target_pages value for job {job_id}: {job_data.get('target_pages')}")
+            logger.error(f"Invalid target_pages value for job {job_id}: {job_data.get('target_pages')}")
             job_data["target_pages"] = 1  # Default fallback
     
     if job_data.get("max_iterations"):
         try:
             job_data["max_iterations"] = int(job_data["max_iterations"])
         except (ValueError, TypeError):
-            logger.warning(f"Invalid max_iterations value for job {job_id}: {job_data.get('max_iterations')}")
+            logger.error(f"Invalid max_iterations value for job {job_id}: {job_data.get('max_iterations')}")
             job_data["max_iterations"] = 3  # Default fallback
     
     return job_data
@@ -145,7 +143,7 @@ def update_job_status(
     
     # Check if job exists
     if not client.exists(key):
-        logger.warning(f"Attempted to update non-existent job {job_id}")
+        logger.error(f"Attempted to update non-existent job {job_id}")
         return
     
     # Update status
@@ -160,8 +158,6 @@ def update_job_status(
             client.hset(key, field, json.dumps(value))
         else:
             client.hset(key, field, str(value))
-    
-    logger.debug(f"Updated job {job_id} status to {status}")
 
 
 def delete_job(job_id: str) -> bool:
@@ -177,9 +173,4 @@ def delete_job(job_id: str) -> bool:
     key = _get_job_key(job_id)
     
     deleted = client.delete(key)
-    if deleted:
-        logger.debug(f"Deleted job {job_id} from Redis")
-    else:
-        logger.debug(f"Job {job_id} not found in Redis (may have already been deleted)")
-    
     return deleted > 0

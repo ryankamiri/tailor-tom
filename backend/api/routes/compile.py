@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from tailor_tom.latex_compiler import compile_latex
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.ERROR)  # Only log errors for API endpoints
 router = APIRouter()
 
 
