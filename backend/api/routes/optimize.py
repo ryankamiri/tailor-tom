@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from api.models import OptimizationRequest, OptimizationResponse
-from api.storage import create_job
+from api.storage import create_job, update_job_status
 from api.tasks import optimize_resume_task
 from tailor_tom.latex_compiler import validate_latex
 from tailor_tom.config import settings
@@ -69,21 +69,37 @@ async def create_optimization_job(
     # Route to queue based on CELERY_QUEUE_NAME environment variable
     # This ensures local backend routes to local worker, hosted backend routes to hosted worker
     queue_name = settings.celery_queue_name
-    optimize_resume_task.apply_async(
-        args=[],
-        kwargs={
-            'job_id': job_id,
-            'resume_latex': request.resume_latex,
-            'job_description': request.job_description,
-            'target_pages': request.target_pages,
-            'max_iterations': request.max_iterations,
-            'max_bullet_lines': request.max_bullet_lines,
-            'first_name': request.first_name,
-            'last_name': request.last_name,
-            'company_name': request.company_name,
-        },
-        queue=queue_name,
-    )
+    try:
+        task_result = optimize_resume_task.apply_async(
+            args=[],
+            kwargs={
+                'job_id': job_id,
+                'resume_latex': request.resume_latex,
+                'job_description': request.job_description,
+                'target_pages': request.target_pages,
+                'max_iterations': request.max_iterations,
+                'max_bullet_lines': request.max_bullet_lines,
+                'first_name': request.first_name,
+                'last_name': request.last_name,
+                'company_name': request.company_name,
+            },
+            queue=queue_name,
+        )
+        # Log task ID for debugging (even though we only log errors normally)
+        logger.error(f"Enqueued task {task_result.id} for job {job_id} to queue '{queue_name}'")
+    except Exception as e:
+        logger.exception(f"Failed to enqueue task for job {job_id} to queue '{queue_name}': {e}")
+        # Update job status to failed
+        update_job_status(
+            job_id,
+            "failed",
+            completed_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            error_message=f"Failed to enqueue task: {str(e)}",
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to enqueue optimization task: {str(e)}",
+        )
     
     
     return OptimizationResponse(
