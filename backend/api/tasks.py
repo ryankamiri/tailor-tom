@@ -118,14 +118,49 @@ def optimize_resume_task(
             )
         else:
             # Update job with error
+            # Even if optimization failed, store optimized_latex if available (user can still view/use it)
             error_message = result.error_message or "Optimization failed"
+            
+            # Store result with optimized_latex if available (even for failed jobs)
+            # Also include error_details for frontend logging
+            result_data = None
+            if result.optimized_latex:
+                # Generate filename even for failed jobs (if we have names)
+                safe_first = first_name.strip().replace(" ", "_").replace("/", "_").title()
+                safe_last = last_name.strip().replace(" ", "_").replace("/", "_").title()
+                safe_company = company_name.strip().replace(" ", "_").replace("/", "_").title()
+                filename = f"{safe_first}_{safe_last}_{safe_company}.pdf"
+                
+                result_data = {
+                    "optimized_latex": result.optimized_latex,
+                    "filename": filename,
+                    "error_details": {
+                        "iterations": result.iterations,
+                        "optimized_latex_available": result.optimized_latex is not None,
+                        "original_latex_length": len(resume_latex),
+                        "optimized_latex_length": len(result.optimized_latex) if result.optimized_latex else 0,
+                    }
+                }
+            else:
+                # No LaTeX available, but still store error details
+                result_data = {
+                    "error_details": {
+                        "iterations": result.iterations,
+                        "optimized_latex_available": False,
+                        "original_latex_length": len(resume_latex),
+                        "optimized_latex_length": 0,
+                    }
+                }
+            
             update_job_status(
                 job_id,
                 "failed",
                 completed_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
                 error_message=error_message,
+                result=result_data,  # Store LaTeX and error details even for failed jobs
             )
             
+            # Log minimal error to backend (full details will be logged in frontend)
             logger.error(f"[optimize_resume_task] Job {job_id} failed: {error_message}")
             
     except (TimeLimitExceeded, SoftTimeLimitExceeded) as e:

@@ -14,6 +14,7 @@ export interface JobResultsViewProps {
   originalLatex: string;
   optimizedLatex: string;
   filename?: string | null;
+  isFailed?: boolean; // If true, this is a failed job but LaTeX is still available
 }
 
 export function JobResultsView({
@@ -21,6 +22,7 @@ export function JobResultsView({
   originalLatex,
   optimizedLatex,
   filename,
+  isFailed = false,
 }: JobResultsViewProps) {
   const [editedLatex, setEditedLatex] = useState<string>(optimizedLatex);
   const [isEdited, setIsEdited] = useState(false);
@@ -128,8 +130,24 @@ export function JobResultsView({
 
   return (
     <div className="space-y-6">
+      {isFailed && (
+        <Card className="border-amber-500 bg-amber-50 dark:bg-amber-950">
+          <CardContent className="pt-6">
+            <p className="text-sm text-amber-800 dark:text-amber-200">
+              <strong>Note:</strong> This job failed, but the LaTeX output is still available. 
+              You can review and download it, but it may have errors or incomplete optimizations.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+      
       {/* PDF Diff View - Side-by-side PDFs with highlights */}
-      <PdfDiffView originalLatex={originalLatex} optimizedLatex={editedLatex} trigger={pdfDiffTrigger} />
+      <PdfDiffView 
+        originalLatex={originalLatex} 
+        optimizedLatex={editedLatex} 
+        trigger={pdfDiffTrigger}
+        showErrorOnFail={!isFailed} // Don't show errors if this is a failed job (expected)
+      />
 
       {/* Summary */}
       {diffSummary && (

@@ -10,9 +10,10 @@ export interface PdfDiffViewProps {
   originalLatex: string;
   optimizedLatex: string;
   trigger?: number; // Force reload when this value changes
+  showErrorOnFail?: boolean; // If false, don't show errors (for failed jobs where errors are expected)
 }
 
-export function PdfDiffView({ originalLatex, optimizedLatex, trigger }: PdfDiffViewProps) {
+export function PdfDiffView({ originalLatex, optimizedLatex, trigger, showErrorOnFail = true }: PdfDiffViewProps) {
   const [originalPdfUrl, setOriginalPdfUrl] = useState<string | null>(null);
   const [optimizedPdfUrl, setOptimizedPdfUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -52,18 +53,26 @@ export function PdfDiffView({ originalLatex, optimizedLatex, trigger }: PdfDiffV
         setOptimizedPdfUrl(newOptimizedUrl);
         setIsLoading(false);
       } catch (err) {
-        let errorMessage = 'Failed to load PDF diffs';
-        if (err instanceof Error) {
-          errorMessage = err.message;
-          // Extract LaTeX compilation errors for better UX
-          if (errorMessage.includes('Failed to compile')) {
-            // The error message from backend should already be descriptive
-            errorMessage = errorMessage.replace('Failed to generate PDF diffs: ', '');
-          }
-        }
-        setError(errorMessage);
-        setIsLoading(false);
+        // Log full error to console
         console.error('Failed to load PDF diffs:', err);
+        
+        // Only show error if showErrorOnFail is true (default behavior)
+        if (showErrorOnFail) {
+          let errorMessage = 'Failed to load PDF diffs';
+          if (err instanceof Error) {
+            errorMessage = err.message;
+            // Extract LaTeX compilation errors for better UX
+            if (errorMessage.includes('Failed to compile')) {
+              // The error message from backend should already be descriptive
+              errorMessage = errorMessage.replace('Failed to generate PDF diffs: ', '');
+            }
+          }
+          setError(errorMessage);
+        } else {
+          // For failed jobs, silently fail - don't show error
+          setError(null);
+        }
+        setIsLoading(false);
       }
     };
 

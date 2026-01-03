@@ -33,26 +33,31 @@ async def get_job_status(job_id: str):
 
 @router.get("/jobs/{job_id}/latex")
 async def get_job_latex(job_id: str):
-    """Get the optimized LaTeX for a completed job."""
+    """Get the optimized LaTeX for a job (works for both completed and failed jobs with LaTeX)."""
     
     job = get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    if job["status"] != "completed":
+    # Allow both completed and failed jobs to return LaTeX (if available)
+    if job["status"] not in ["completed", "failed"]:
         raise HTTPException(
             status_code=400,
-            detail=f"Job is not completed (status: {job['status']})",
+            detail=f"Job is not completed or failed (status: {job['status']})",
         )
     
     result = job.get("result")
     if not result:
         raise HTTPException(status_code=500, detail="Job result not available")
     
+    optimized_latex = result.get("optimized_latex")
+    if not optimized_latex:
+        raise HTTPException(status_code=500, detail="Optimized LaTeX not available for this job")
+    
     return {
         "job_id": job_id,
-        "latex": result.get("optimized_latex"),
-        "filename": result.get("filename"),
+        "latex": optimized_latex,
+        "filename": result.get("filename", "resume.pdf"),
     }
 
 

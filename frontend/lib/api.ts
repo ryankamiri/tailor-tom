@@ -22,8 +22,14 @@ export interface JobStatus {
   error_message: string | null;
   company_name: string | null;
   result: {
-    optimized_latex: string;
-    filename: string;
+    optimized_latex?: string;
+    filename?: string;
+    error_details?: {
+      iterations: number;
+      optimized_latex_available: boolean;
+      original_latex_length: number;
+      optimized_latex_length: number;
+    };
   } | null;
 }
 

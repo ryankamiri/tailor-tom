@@ -32,12 +32,25 @@ export default function JobDetailsPage() {
         // We already have it stored, use that
         setOptimizedLatex(storedLatex);
       } else {
-        // Fetch from backend and store in localStorage
-        const latexData = await getJobLatex(jobId);
-        setOptimizedLatex(latexData.latex);
-        
-        // Store in localStorage
-        storeOptimizedLatex(jobId, latexData.latex, latexData.filename);
+        // Try to fetch from backend (works for both completed and failed jobs with LaTeX)
+        try {
+          const latexData = await getJobLatex(jobId);
+          setOptimizedLatex(latexData.latex);
+          
+          // Store in localStorage
+          storeOptimizedLatex(jobId, latexData.latex, latexData.filename);
+        } catch (fetchError) {
+          // If getJobLatex fails (e.g., job doesn't have LaTeX), check if result has LaTeX
+          const currentStatus = jobStatus;
+          if (currentStatus?.result?.optimized_latex) {
+            setOptimizedLatex(currentStatus.result.optimized_latex);
+            const filename = currentStatus.result.filename || 'resume.pdf';
+            storeOptimizedLatex(jobId, currentStatus.result.optimized_latex, filename);
+          } else {
+            // No LaTeX available, don't set it
+            console.warn(`No LaTeX available for job ${jobId}:`, fetchError);
+          }
+        }
       }
       
       // Always delete job from backend after loading results (whether from cache or fetched)
@@ -51,9 +64,11 @@ export default function JobDetailsPage() {
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to load job results';
+      // Log full error to console
+      console.error(`[loadJobResults] Failed to load results for job ${jobId}:`, error);
       toast.error(errorMessage);
     }
-  }, [jobId]);
+  }, [jobId, jobStatus]);
 
   const loadJobData = useCallback(async () => {
     try {
@@ -64,23 +79,24 @@ export default function JobDetailsPage() {
         // Convert stored job to JobStatus format
         const filename = getJobFilename(jobId);
         const optimizedLatex = getOptimizedLatex(jobId);
-        const status: JobStatus = {
-          job_id: storedJob.jobId,
-          status: storedJob.status,
-          created_at: storedJob.createdAt,
-          completed_at: storedJob.completedAt || null,
-          error_message: storedJob.errorMessage || null,
-          company_name: storedJob.companyName || null,
-          result: storedJob.status === 'completed' && filename && optimizedLatex
-            ? { optimized_latex: optimizedLatex, filename } 
-            : null,
-        };
+          const status: JobStatus = {
+            job_id: storedJob.jobId,
+            status: storedJob.status,
+            created_at: storedJob.createdAt,
+            completed_at: storedJob.completedAt || null,
+            error_message: storedJob.errorMessage || null,
+            company_name: storedJob.companyName || null,
+            result: (storedJob.status === 'completed' || storedJob.status === 'failed') && filename && optimizedLatex
+              ? { optimized_latex: optimizedLatex, filename } 
+              : null,
+          };
         setJobStatus(status);
         
         // Set original LaTeX from stored job
         setOriginalLatex(storedJob.originalLatex);
 
-        if (status.status === 'completed') {
+        if (status.status === 'completed' || (status.status === 'failed' && status.result?.optimized_latex)) {
+          // Load results for completed jobs, or failed jobs that have LaTeX available
           await loadJobResults();
         }
       } else {
@@ -89,7 +105,8 @@ export default function JobDetailsPage() {
           const status = await getJobStatus(jobId);
           setJobStatus(status);
 
-          if (status.status === 'completed') {
+          if (status.status === 'completed' || (status.status === 'failed' && status.result?.optimized_latex)) {
+            // Load results for completed jobs, or failed jobs that have LaTeX available
             await loadJobResults();
           }
         } catch (error) {
@@ -146,6 +163,29 @@ export default function JobDetailsPage() {
           }
         } else if (status.status === 'failed') {
           clearInterval(interval);
+          // Try to load results if LaTeX is available for failed jobs
+          if (status.result?.optimized_latex) {
+            await loadJobResults();
+          }
+          // Log full error details to frontend console
+          console.group(`%c[Job ${jobId}] Optimization Failed`, 'color: red; font-weight: bold; font-size: 14px;');
+          console.error('Error Message:', status.error_message || 'Unknown error');
+          if (status.company_name) {
+            console.log('Company:', status.company_name);
+          }
+          if (status.completed_at) {
+            console.log('Failed At:', status.completed_at);
+          }
+          if (status.result?.error_details) {
+            console.group('Error Details:');
+            console.log('Iterations:', status.result.error_details.iterations);
+            console.log('Optimized LaTeX Available:', status.result.error_details.optimized_latex_available);
+            console.log('Original LaTeX Length:', status.result.error_details.original_latex_length, 'chars');
+            console.log('Optimized LaTeX Length:', status.result.error_details.optimized_latex_length, 'chars');
+            console.groupEnd();
+          }
+          console.log('Has LaTeX in Result:', !!status.result?.optimized_latex);
+          console.groupEnd();
         }
       } catch (error) {
         // If we get a 404, check if job exists in localStorage
@@ -204,12 +244,14 @@ export default function JobDetailsPage() {
 
       <JobStatusView status={jobStatus.status} errorMessage={jobStatus.error_message} />
 
-      {jobStatus.status === 'completed' && optimizedLatex && originalLatex && (
+      {/* Show results if we have LaTeX, even for failed jobs */}
+      {optimizedLatex && originalLatex && (
         <JobResultsView
           jobId={jobId}
           originalLatex={originalLatex}
           optimizedLatex={optimizedLatex}
           filename={jobStatus.result?.filename}
+          isFailed={jobStatus.status === 'failed'}
         />
       )}
 
