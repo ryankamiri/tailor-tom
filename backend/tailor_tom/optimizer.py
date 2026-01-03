@@ -1210,7 +1210,15 @@ class ResumeOptimizerPipeline(dspy.Module):
         # Validate LaTeX structure (only \item content should change)
         structure_valid, structure_error = _validate_latex_structure(phase1_latex, resume_latex)
         if not structure_valid:
-            logger.warning(f"Phase 1 LaTeX structure validation failed: {structure_error}")
+            logger.error(f"Phase 1 LaTeX structure validation failed: {structure_error}")
+            return OptimizationResult(
+                success=False,
+                original_latex=resume_latex,
+                optimized_latex=phase1_latex,
+                iterations=1,
+                error_message=f"Phase 1 structure validation failed: {structure_error}",
+                filename=None,
+            )
 
         # Validate Skills and Education sections unchanged
         skills_preserved = _validate_section_preservation(phase1_latex, resume_latex, "Skills")

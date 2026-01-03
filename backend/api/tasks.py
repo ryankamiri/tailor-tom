@@ -2,6 +2,8 @@
 
 import logging
 from datetime import datetime, timezone
+from billiard.exceptions import TimeLimitExceeded
+from celery.exceptions import SoftTimeLimitExceeded
 from api.celery_app import celery_app
 from api.storage import update_job_status, get_job
 from tailor_tom.optimizer import optimize_resume, configure_dspy
@@ -11,7 +13,39 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)  # Only log errors for Celery tasks
 
 
-@celery_app.task(bind=True, name="api.tasks.optimize_resume_task")
+def _on_task_failure(self, exc, task_id, args, kwargs, einfo):
+    """Callback when task fails (including timeouts and crashes).
+    
+    This is called when the task fails, ensuring the job status is updated to 'failed'.
+    Note: SIGKILL (hard timeout) may not trigger this, but SoftTimeLimitExceeded will.
+    """
+    try:
+        # Extract job_id from kwargs (task is called with args=[] and all params in kwargs)
+        job_id = None
+        if kwargs and 'job_id' in kwargs:
+            job_id = kwargs['job_id']
+        elif args and len(args) > 0:
+            # Fallback to args if kwargs not available
+            job_id = args[0]
+        
+        if job_id:
+            # Check if job is already marked as failed (avoid duplicate updates)
+            job = get_job(job_id)
+            if job and job.get("status") != "failed":
+                error_message = f"Task failed: {str(exc)}" if exc else "Task failed (timeout or crash)"
+                logger.error(f"[optimize_resume_task] Task {task_id} failed for job {job_id}: {error_message}")
+                
+                update_job_status(
+                    job_id,
+                    "failed",
+                    completed_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                    error_message=error_message,
+                )
+    except Exception as e:
+        logger.error(f"[optimize_resume_task] Error in failure callback: {e}")
+
+
+@celery_app.task(bind=True, name="api.tasks.optimize_resume_task", on_failure=_on_task_failure)
 def optimize_resume_task(
     self,
     job_id: str,
@@ -94,6 +128,19 @@ def optimize_resume_task(
             
             logger.error(f"[optimize_resume_task] Job {job_id} failed: {error_message}")
             
+    except (TimeLimitExceeded, SoftTimeLimitExceeded) as e:
+        # Handle timeout exceptions - mark job as failed
+        error_message = f"Task timed out after {settings.celery_task_time_limit} seconds"
+        logger.error(f"[optimize_resume_task] Job {job_id} timed out: {error_message}")
+        
+        update_job_status(
+            job_id,
+            "failed",
+            completed_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            error_message=error_message,
+        )
+        # Don't re-raise - timeout is a final failure, not retryable
+        
     except Exception as e:
         logger.exception(f"[optimize_resume_task] Error during optimization for job {job_id}")
         
@@ -105,6 +152,6 @@ def optimize_resume_task(
             error_message=str(e),
         )
         
-        # Re-raise to trigger Celery retry
+        # Re-raise to trigger Celery retry (for non-timeout exceptions)
         raise
 
