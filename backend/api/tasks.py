@@ -143,7 +143,15 @@ def optimize_resume_task(
                 }
             else:
                 # No LaTeX available, but still store error details
+                # Provide default values for optimized_latex and filename to match frontend interface
+                safe_first = first_name.strip().replace(" ", "_").replace("/", "_").title()
+                safe_last = last_name.strip().replace(" ", "_").replace("/", "_").title()
+                safe_company = company_name.strip().replace(" ", "_").replace("/", "_").title()
+                filename = f"{safe_first}_{safe_last}_{safe_company}.pdf"
+                
                 result_data = {
+                    "optimized_latex": "",  # Empty string when no LaTeX available
+                    "filename": filename,  # Still provide filename for consistency
                     "error_details": {
                         "iterations": result.iterations,
                         "optimized_latex_available": False,

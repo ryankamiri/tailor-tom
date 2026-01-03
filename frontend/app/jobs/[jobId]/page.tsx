@@ -32,23 +32,25 @@ export default function JobDetailsPage() {
         // We already have it stored, use that
         setOptimizedLatex(storedLatex);
       } else {
-        // Try to fetch from backend (works for both completed and failed jobs with LaTeX)
-        try {
-          const latexData = await getJobLatex(jobId);
-          setOptimizedLatex(latexData.latex);
-          
-          // Store in localStorage
-          storeOptimizedLatex(jobId, latexData.latex, latexData.filename);
-        } catch (fetchError) {
-          // If getJobLatex fails (e.g., job doesn't have LaTeX), check if result has LaTeX
-          const currentStatus = jobStatus;
-          if (currentStatus?.result?.optimized_latex) {
-            setOptimizedLatex(currentStatus.result.optimized_latex);
-            const filename = currentStatus.result.filename || 'resume.pdf';
-            storeOptimizedLatex(jobId, currentStatus.result.optimized_latex, filename);
-          } else {
-            // No LaTeX available, don't set it
-            console.warn(`No LaTeX available for job ${jobId}:`, fetchError);
+        // Check if current jobStatus has LaTeX in result (from backend fetch)
+        const currentStatus = jobStatus;
+        if (currentStatus?.result?.optimized_latex && currentStatus.result.optimized_latex.length > 0) {
+          // Use LaTeX directly from status result (only if not empty)
+          setOptimizedLatex(currentStatus.result.optimized_latex);
+          const filename = currentStatus.result.filename || 'resume.pdf';
+          storeOptimizedLatex(jobId, currentStatus.result.optimized_latex, filename);
+        } else {
+          // Try to fetch from backend API (works for both completed and failed jobs with LaTeX)
+          try {
+            const latexData = await getJobLatex(jobId);
+            setOptimizedLatex(latexData.latex);
+            
+            // Store in localStorage
+            storeOptimizedLatex(jobId, latexData.latex, latexData.filename);
+          } catch (fetchError) {
+            // No LaTeX available from any source
+            // Use console.error instead of console.warn for better visibility in production
+            console.error(`[loadJobResults] No LaTeX available for job ${jobId}:`, fetchError);
           }
         }
       }
@@ -60,7 +62,8 @@ export default function JobDetailsPage() {
       } catch (error) {
         // Error is logged on backend if job exists but deletion failed
         // Don't show error to user - it's not critical, just means backend keeps the data longer
-        console.warn(`Failed to delete job ${jobId} from backend:`, error);
+        // Use console.error for better visibility in production (console.warn may be stripped)
+        console.error(`[loadJobResults] Failed to delete job ${jobId} from backend:`, error);
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to load job results';
@@ -95,8 +98,9 @@ export default function JobDetailsPage() {
         // Set original LaTeX from stored job
         setOriginalLatex(storedJob.originalLatex);
 
-        if (status.status === 'completed' || (status.status === 'failed' && status.result?.optimized_latex)) {
-          // Load results for completed jobs, or failed jobs that have LaTeX available
+        if (status.status === 'completed' || status.status === 'failed') {
+          // Always try to load results for completed or failed jobs
+          // loadJobResults() will handle fetching LaTeX from backend if available
           await loadJobResults();
         }
       } else {
@@ -105,8 +109,9 @@ export default function JobDetailsPage() {
           const status = await getJobStatus(jobId);
           setJobStatus(status);
 
-          if (status.status === 'completed' || (status.status === 'failed' && status.result?.optimized_latex)) {
-            // Load results for completed jobs, or failed jobs that have LaTeX available
+          if (status.status === 'completed' || status.status === 'failed') {
+            // Always try to load results for completed or failed jobs
+            // loadJobResults() will handle fetching LaTeX from backend if available
             await loadJobResults();
           }
         } catch (error) {
@@ -163,10 +168,9 @@ export default function JobDetailsPage() {
           }
         } else if (status.status === 'failed') {
           clearInterval(interval);
-          // Try to load results if LaTeX is available for failed jobs
-          if (status.result?.optimized_latex) {
-            await loadJobResults();
-          }
+          // Always try to load results for failed jobs
+          // loadJobResults() will handle fetching LaTeX from backend if available
+          await loadJobResults();
           // Log full error details to frontend console
           console.group(`%c[Job ${jobId}] Optimization Failed`, 'color: red; font-weight: bold; font-size: 14px;');
           console.error('Error Message:', status.error_message || 'Unknown error');
