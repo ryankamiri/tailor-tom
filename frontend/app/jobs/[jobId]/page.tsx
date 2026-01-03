@@ -38,15 +38,16 @@ export default function JobDetailsPage() {
         
         // Store in localStorage
         storeOptimizedLatex(jobId, latexData.latex, latexData.filename);
-        
-        // Delete job from backend after successfully storing in localStorage
-        // This saves backend memory since localStorage is now the source of truth
-        try {
-          await deleteJob(jobId);
-        } catch (error) {
-          console.warn(`Failed to delete job ${jobId} from backend:`, error);
-          // Don't show error to user - it's not critical, just means backend keeps the data longer
-        }
+      }
+      
+      // Always delete job from backend after loading results (whether from cache or fetched)
+      // This saves backend memory since localStorage is now the source of truth
+      try {
+        await deleteJob(jobId);
+      } catch (error) {
+        // Error is logged on backend if job exists but deletion failed
+        // Don't show error to user - it's not critical, just means backend keeps the data longer
+        console.warn(`Failed to delete job ${jobId} from backend:`, error);
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to load job results';

@@ -97,6 +97,7 @@ async def delete_job_endpoint(job_id: str):
     job = get_job(job_id)
     if not job:
         # Job doesn't exist - return success (idempotent operation)
+        # Don't log - this is expected behavior
         return {"job_id": job_id, "message": "Job deleted successfully"}
     
     if job["status"] in ["pending", "processing"]:
@@ -106,7 +107,15 @@ async def delete_job_endpoint(job_id: str):
         )
     
     # Delete job from Redis
-    delete_job(job_id)
+    deleted = delete_job(job_id)
+    
+    if not deleted:
+        # Job exists but deletion failed - log error
+        logger.error(f"Failed to delete job {job_id} from Redis (job exists but deletion returned False)")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to delete job from Redis",
+        )
     
     return {"job_id": job_id, "message": "Job deleted successfully"}
 
