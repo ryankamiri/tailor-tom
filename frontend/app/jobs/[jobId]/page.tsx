@@ -1,13 +1,13 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { getJobStatus, getJobLatex, JobStatus, deleteJob } from '@/lib/api';
 import { updateJobStatus, storeOptimizedLatex, getOptimizedLatex, getStoredJob, getJobFilename } from '@/lib/storage';
-import { showJobCompleteNotification, isTabFocused } from '@/lib/notifications';
+import { showJobCompleteNotification, showJobFailedNotification, isTabFocused } from '@/lib/notifications';
 import { JobStatusBadge } from '@/components/jobs/job-status-badge';
 import { JobStatusView } from '@/components/jobs/job-status-view';
 import { JobResultsView } from '@/components/jobs/job-results-view';
@@ -23,7 +23,7 @@ export default function JobDetailsPage() {
   const [optimizedLatex, setOptimizedLatex] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
 
-  const loadJobResults = useCallback(async () => {
+  const loadJobResults = useCallback(async (status: JobStatus) => {
     try {
       // First check if we already have the optimized LaTeX in localStorage
       const storedLatex = getOptimizedLatex(jobId);
@@ -31,27 +31,22 @@ export default function JobDetailsPage() {
       if (storedLatex) {
         // We already have it stored, use that
         setOptimizedLatex(storedLatex);
+      } else if (status.result?.optimized_latex && status.result.optimized_latex.length > 0) {
+        // Use LaTeX directly from status result (backend always provides it for completed/failed jobs)
+        setOptimizedLatex(status.result.optimized_latex);
+        const filename = status.result.filename || 'resume.pdf';
+        storeOptimizedLatex(jobId, status.result.optimized_latex, filename);
       } else {
-        // Check if current jobStatus has LaTeX in result (from backend fetch)
-        const currentStatus = jobStatus;
-        if (currentStatus?.result?.optimized_latex && currentStatus.result.optimized_latex.length > 0) {
-          // Use LaTeX directly from status result (only if not empty)
-          setOptimizedLatex(currentStatus.result.optimized_latex);
-          const filename = currentStatus.result.filename || 'resume.pdf';
-          storeOptimizedLatex(jobId, currentStatus.result.optimized_latex, filename);
-        } else {
-          // Try to fetch from backend API (works for both completed and failed jobs with LaTeX)
-          try {
-            const latexData = await getJobLatex(jobId);
-            setOptimizedLatex(latexData.latex);
-            
-            // Store in localStorage
-            storeOptimizedLatex(jobId, latexData.latex, latexData.filename);
-          } catch (fetchError) {
-            // No LaTeX available from any source
-            // Use console.error instead of console.warn for better visibility in production
-            console.error(`[loadJobResults] No LaTeX available for job ${jobId}:`, fetchError);
-          }
+        // Fallback: Try to fetch from backend API (for edge cases where result might be missing)
+        try {
+          const latexData = await getJobLatex(jobId);
+          setOptimizedLatex(latexData.latex);
+          
+          // Store in localStorage
+          storeOptimizedLatex(jobId, latexData.latex, latexData.filename);
+        } catch (fetchError) {
+          // No LaTeX available from any source
+          console.error(`No LaTeX available for job ${jobId}:`, fetchError);
         }
       }
       
@@ -62,16 +57,18 @@ export default function JobDetailsPage() {
       } catch (error) {
         // Error is logged on backend if job exists but deletion failed
         // Don't show error to user - it's not critical, just means backend keeps the data longer
-        // Use console.error for better visibility in production (console.warn may be stripped)
-        console.error(`[loadJobResults] Failed to delete job ${jobId} from backend:`, error);
+        console.error(`Failed to delete job ${jobId} from backend:`, error);
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to load job results';
-      // Log full error to console
-      console.error(`[loadJobResults] Failed to load results for job ${jobId}:`, error);
+      console.error(`Failed to load results for job ${jobId}:`, error);
       toast.error(errorMessage);
     }
-  }, [jobId, jobStatus]);
+  }, [jobId]);
+  
+  // Use ref to store latest loadJobResults callback to avoid dependency issues in polling
+  const loadJobResultsRef = useRef(loadJobResults);
+  loadJobResultsRef.current = loadJobResults;
 
   const loadJobData = useCallback(async () => {
     try {
@@ -100,8 +97,32 @@ export default function JobDetailsPage() {
 
         if (status.status === 'completed' || status.status === 'failed') {
           // Always try to load results for completed or failed jobs
-          // loadJobResults() will handle fetching LaTeX from backend if available
-          await loadJobResults();
+          // Pass status directly to avoid closure issues with async state updates
+          await loadJobResults(status);
+          
+          // Log full error details for failed jobs (but don't show notification - job was already failed)
+          if (status.status === 'failed') {
+            console.group(`%c[Job ${jobId}] Optimization Failed`, 'color: red; font-weight: bold; font-size: 14px;');
+            console.error('Error Message:', status.error_message || 'Unknown error');
+            if (status.company_name) {
+              console.log('Company:', status.company_name);
+            }
+            if (status.completed_at) {
+              console.log('Failed At:', status.completed_at);
+            }
+            if (status.result?.error_details) {
+              console.group('Error Details:');
+              console.log('Iterations:', status.result.error_details.iterations);
+              console.log('Optimized LaTeX Available:', status.result.error_details.optimized_latex_available);
+              console.log('Original LaTeX Length:', status.result.error_details.original_latex_length, 'chars');
+              console.log('Optimized LaTeX Length:', status.result.error_details.optimized_latex_length, 'chars');
+              console.groupEnd();
+            }
+            console.log('Has LaTeX in Result:', !!status.result?.optimized_latex);
+            console.log('Full Job Status:', status);
+            console.groupEnd();
+            // Note: No notification here - job was already failed when we loaded it
+          }
         }
       } else {
         // Job not in localStorage, try to fetch from backend
@@ -111,18 +132,44 @@ export default function JobDetailsPage() {
 
           if (status.status === 'completed' || status.status === 'failed') {
             // Always try to load results for completed or failed jobs
-            // loadJobResults() will handle fetching LaTeX from backend if available
-            await loadJobResults();
+            // Pass status directly to avoid closure issues with async state updates
+            await loadJobResults(status);
+            
+            // Log full error details for failed jobs (but don't show notification - job was already failed)
+            if (status.status === 'failed') {
+              console.group(`%c[Job ${jobId}] Optimization Failed`, 'color: red; font-weight: bold; font-size: 14px;');
+              console.error('Error Message:', status.error_message || 'Unknown error');
+              if (status.company_name) {
+                console.log('Company:', status.company_name);
+              }
+              if (status.completed_at) {
+                console.log('Failed At:', status.completed_at);
+              }
+              if (status.result?.error_details) {
+                console.group('Error Details:');
+                console.log('Iterations:', status.result.error_details.iterations);
+                console.log('Optimized LaTeX Available:', status.result.error_details.optimized_latex_available);
+                console.log('Original LaTeX Length:', status.result.error_details.original_latex_length, 'chars');
+                console.log('Optimized LaTeX Length:', status.result.error_details.optimized_latex_length, 'chars');
+                console.groupEnd();
+              }
+              console.log('Has LaTeX in Result:', !!status.result?.optimized_latex);
+              console.log('Full Job Status:', status);
+              console.groupEnd();
+              // Note: No notification here - job was already failed when we loaded it
+            }
           }
         } catch (error) {
           // Backend returned 404 or error, show not found
           const errorMessage = error instanceof Error ? error.message : 'Failed to load job';
+          console.error(`Backend fetch failed:`, error);
           toast.error(errorMessage);
           setJobStatus(null);
         }
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to load job';
+      console.error(`Error loading job data:`, error);
       toast.error(errorMessage);
       setJobStatus(null);
     } finally {
@@ -130,15 +177,26 @@ export default function JobDetailsPage() {
     }
   }, [jobId, loadJobResults]);
 
+  // Use ref to store latest loadJobData callback to avoid dependency issues
+  const loadJobDataRef = useRef(loadJobData);
+  loadJobDataRef.current = loadJobData;
+
+  // Initial load - only run once on mount (when jobId changes)
   useEffect(() => {
-    loadJobData();
+    // Use ref to avoid dependency on loadJobData (which depends on loadJobResults, which depends on jobStatus)
+    loadJobDataRef.current();
+  }, [jobId]); // Only depend on jobId - use ref for loadJobData
 
-    // Check if we should poll - only poll for pending/processing jobs
+  // Polling effect - separate from initial load, only depends on jobId and jobStatus.status
+  useEffect(() => {
+    // Don't poll if job is already completed or failed
+    if (jobStatus?.status === 'completed' || jobStatus?.status === 'failed') {
+      return;
+    }
+
+    // Also check localStorage as fallback
     const storedJob = getStoredJob(jobId);
-    const shouldPoll = !storedJob || (storedJob.status !== 'completed' && storedJob.status !== 'failed');
-
-    if (!shouldPoll) {
-      // Job is already completed/failed, no need to poll
+    if (storedJob && (storedJob.status === 'completed' || storedJob.status === 'failed')) {
       return;
     }
 
@@ -160,7 +218,10 @@ export default function JobDetailsPage() {
         // If job completed, stop polling and load results
         if (status.status === 'completed') {
           clearInterval(interval);
-          await loadJobResults();
+          // Pass status directly to avoid closure issues - use ref to get latest callback
+          loadJobResultsRef.current(status).catch(err => {
+            console.error('Failed to load job results:', err);
+          });
 
           // Show notification
           if (status.company_name) {
@@ -169,8 +230,10 @@ export default function JobDetailsPage() {
         } else if (status.status === 'failed') {
           clearInterval(interval);
           // Always try to load results for failed jobs
-          // loadJobResults() will handle fetching LaTeX from backend if available
-          await loadJobResults();
+          // Pass status directly to avoid closure issues - use ref to get latest callback
+          loadJobResultsRef.current(status).catch(err => {
+            console.error('Failed to load job results:', err);
+          });
           // Log full error details to frontend console
           console.group(`%c[Job ${jobId}] Optimization Failed`, 'color: red; font-weight: bold; font-size: 14px;');
           console.error('Error Message:', status.error_message || 'Unknown error');
@@ -189,7 +252,16 @@ export default function JobDetailsPage() {
             console.groupEnd();
           }
           console.log('Has LaTeX in Result:', !!status.result?.optimized_latex);
+          console.log('Full Job Status:', status);
           console.groupEnd();
+          
+          // Show failure notification
+          showJobFailedNotification(
+            status.company_name || 'Your',
+            jobId,
+            status.error_message,
+            isTabFocused()
+          );
         }
       } catch (error) {
         // If we get a 404, check if job exists in localStorage
@@ -198,7 +270,6 @@ export default function JobDetailsPage() {
         if (storedJob && (storedJob.status === 'completed' || storedJob.status === 'failed')) {
           // Job is in localStorage and completed/failed, backend deleted it - stop polling
           clearInterval(interval);
-          console.log(`Job ${jobId} was deleted from backend (expected after completion)`);
         } else {
           // Real error - log it but continue polling
           console.error('Error polling job status:', error);
@@ -209,7 +280,7 @@ export default function JobDetailsPage() {
     return () => {
       clearInterval(interval);
     };
-  }, [jobId, loadJobData, loadJobResults]);
+  }, [jobId, jobStatus?.status]); // Only depend on jobId and status - use ref for loadJobResults
 
 
   if (isLoading) {

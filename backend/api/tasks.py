@@ -17,7 +17,7 @@ def _on_task_failure(self, exc, task_id, args, kwargs, einfo):
     """Callback when task fails (including timeouts and crashes).
     
     This is called when the task fails, ensuring the job status is updated to 'failed'.
-    Note: SIGKILL (hard timeout) may not trigger this, but SoftTimeLimitExceeded will.
+    Note: SIGKILL (hard timeout) may not trigger this reliably, but SoftTimeLimitExceeded will.
     """
     try:
         # Extract job_id from kwargs (task is called with args=[] and all params in kwargs)
@@ -32,14 +32,48 @@ def _on_task_failure(self, exc, task_id, args, kwargs, einfo):
             # Check if job is already marked as failed (avoid duplicate updates)
             job = get_job(job_id)
             if job and job.get("status") != "failed":
-                error_message = f"Task failed: {str(exc)}" if exc else "Task failed (timeout or crash)"
+                # Determine error message based on exception type
+                if isinstance(exc, (TimeLimitExceeded, SoftTimeLimitExceeded)):
+                    error_message = f"Task timed out after {settings.celery_task_time_limit} seconds"
+                elif exc:
+                    error_message = f"Task failed: {str(exc)}"
+                else:
+                    error_message = "Task failed (timeout or crash)"
+                
                 logger.error(f"[optimize_resume_task] Task {task_id} failed for job {job_id}: {error_message}")
+                
+                # Store any available result data (even if partial)
+                result_data = None
+                if job.get("result"):
+                    # Preserve existing result if available
+                    try:
+                        import json
+                        existing_result = job.get("result")
+                        if isinstance(existing_result, str):
+                            existing_result = json.loads(existing_result)
+                        result_data = existing_result
+                    except:
+                        pass
+                
+                # If no result data, provide default structure
+                if not result_data:
+                    result_data = {
+                        "optimized_latex": "",
+                        "filename": "resume.pdf",
+                        "error_details": {
+                            "iterations": 0,
+                            "optimized_latex_available": False,
+                            "original_latex_length": 0,
+                            "optimized_latex_length": 0,
+                        }
+                    }
                 
                 update_job_status(
                     job_id,
                     "failed",
                     completed_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
                     error_message=error_message,
+                    result=result_data,
                 )
     except Exception as e:
         logger.error(f"[optimize_resume_task] Error in failure callback: {e}")
@@ -176,11 +210,38 @@ def optimize_resume_task(
         error_message = f"Task timed out after {settings.celery_task_time_limit} seconds"
         logger.error(f"[optimize_resume_task] Job {job_id} timed out: {error_message}")
         
+        # Try to get any partial result from the job
+        job = get_job(job_id)
+        result_data = None
+        if job and job.get("result"):
+            try:
+                import json
+                existing_result = job.get("result")
+                if isinstance(existing_result, str):
+                    existing_result = json.loads(existing_result)
+                result_data = existing_result
+            except:
+                pass
+        
+        # If no result data, provide default structure
+        if not result_data:
+            result_data = {
+                "optimized_latex": "",
+                "filename": "resume.pdf",
+                "error_details": {
+                    "iterations": 0,
+                    "optimized_latex_available": False,
+                    "original_latex_length": len(resume_latex) if 'resume_latex' in locals() else 0,
+                    "optimized_latex_length": 0,
+                }
+            }
+        
         update_job_status(
             job_id,
             "failed",
             completed_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
             error_message=error_message,
+            result=result_data,
         )
         # Don't re-raise - timeout is a final failure, not retryable
         

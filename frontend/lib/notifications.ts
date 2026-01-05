@@ -73,6 +73,58 @@ export function showJobCompleteNotification(
 }
 
 /**
+ * Show a job failure notification (toast if tab focused, desktop notification if not).
+ */
+export function showJobFailedNotification(
+  companyName: string,
+  jobId: string,
+  errorMessage: string | null,
+  isTabFocused: boolean
+): void {
+  const message = `${companyName || 'Your'} ATS Resume optimization failed`;
+  const errorText = errorMessage ? `: ${errorMessage}` : '';
+  
+  // Always show toast notification so user sees it when they return to the tab
+  toast.error(message + errorText, {
+    action: {
+      label: 'View Details',
+      onClick: () => {
+        window.location.href = `/jobs/${jobId}`;
+      },
+    },
+    duration: 8000, // Longer duration for errors
+  });
+  
+  // Also show desktop notification if tab is not focused and permission is granted
+  if (!isTabFocused) {
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      try {
+        const notification = new Notification('❌ Resume Optimization Failed', {
+          body: `${message}${errorText}. Click to view details.`,
+          icon: '/favicon.ico',
+          badge: '/favicon.ico',
+          tag: `job-${jobId}-failed`, // Prevent duplicate notifications for the same job
+          requireInteraction: false,
+        });
+        
+        notification.onclick = () => {
+          window.focus();
+          window.location.href = `/jobs/${jobId}`;
+          notification.close();
+        };
+        
+        // Auto-close notification after 15 seconds (longer for errors)
+        setTimeout(() => {
+          notification.close();
+        }, 15000);
+      } catch {
+        // Silently fail - toast is already shown
+      }
+    }
+  }
+}
+
+/**
  * Check if the browser tab is currently focused.
  */
 export function isTabFocused(): boolean {

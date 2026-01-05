@@ -29,7 +29,9 @@ class QualityResult:
         if self.page_count > self.page_target:
             issues.append(f"Page count: {self.page_count} (target: {self.page_target})")
         if self.long_bullets:
-            issues.append(f"Long bullets (>3 lines): {len(self.long_bullets)}")
+            # Note: max_bullet_lines is not stored in QualityResult, so we use a generic message
+            # The actual threshold is checked in check_quality() which uses max_bullet_lines parameter
+            issues.append(f"Long bullets: {len(self.long_bullets)}")
         return "; ".join(issues) if issues else "All criteria pass"
     
     @property
@@ -73,6 +75,8 @@ def check_quality(
     Returns:
         QualityResult with pass/fail status and details about issues.
     """
+    logger = logging.getLogger(__name__)
+    
     # Count pages
     page_count = _count_pdf_pages(pdf_bytes)
     
@@ -87,7 +91,6 @@ def check_quality(
         if b.get("line_count", 0) > max_bullet_lines
     ]
     
-    logger = logging.getLogger(__name__)
     # Quality check completed
     
     # Determine if all criteria pass
@@ -272,11 +275,9 @@ def extract_items_from_latex(latex: str) -> List[Dict]:
                     item_producing_commands.add(cmd_name)
                     # Store argument count (default to 1 if not specified)
                     command_arg_counts[cmd_name] = arg_count if arg_count is not None else 1
-                    logger.debug(f"Found item-producing command: \\{cmd_name} (expands to \\item, {command_arg_counts[cmd_name]} args)")
         
         pos = cmd_name_end
     
-    logger.debug(f"Item-producing commands found: {sorted(item_producing_commands)}")
     
     # STEP 2: Find all uses of item-producing commands in document
     all_item_positions = []
@@ -570,8 +571,20 @@ def _is_likely_continuation(
         # Use a longer window to account for text that might be split differently
         search_window = remaining_text[:min(len(line_text) * 3, len(remaining_text))]
         text_similarity = SequenceMatcher(None, line_text.lower(), search_window.lower()).ratio()
-        text_matches = text_similarity > 0.5  # Higher threshold - require stronger match (was 0.4)
+        # CRITICAL: For multi-line bullets, require STRONG textual matching (0.6 threshold)
+        # This prevents including lines from next bullets that happen to be close positionally
+        text_matches = text_similarity > 0.6  # Increased from 0.5 to 0.6 for stricter matching
     
+    # CRITICAL FIX: For multi-line bullets, textual matching is REQUIRED
+    # Positional signals alone are not enough - we need textual confirmation
+    # This prevents false positives where lines from next bullets are included
+    if not is_single_line_bullet:
+        # Multi-line bullet: require textual match AND positional signals
+        # All three must pass: close vertically, similar indent, AND text matches
+        result = is_close_vertically and is_similar_indent and text_matches and not_new_bullet
+        return result
+    
+    # Fallback (shouldn't reach here for multi-line bullets)
     # Combine signals (at least 2 out of 3 must pass)
     signals = [is_close_vertically, is_similar_indent, text_matches and not_new_bullet]
     result = sum(signals) >= 2
@@ -1005,13 +1018,15 @@ def extract_line_metrics(pdf_bytes: bytes, latex: Optional[str] = None) -> Dict:
                     
                     # Check if there's a next item to avoid matching into it
                     next_item_text = None
+                    next_item_full_text = None
                     current_item_idx = None
                     for idx, it in enumerate(items):
                         if it["text"] == item_text:
                             current_item_idx = idx
                             break
                     if current_item_idx is not None and current_item_idx + 1 < len(items):
-                        next_item_text = items[current_item_idx + 1]["text"][:100]  # First 100 chars of next item
+                        next_item_full_text = items[current_item_idx + 1]["text"]
+                        next_item_text = next_item_full_text[:200]  # First 200 chars of next item for better matching
                     
                     # Find the first line that's below our match (Y > current_bottom_y)
                     # Then check subsequent lines for continuation
@@ -1047,14 +1062,60 @@ def extract_line_metrics(pdf_bytes: bytes, latex: Optional[str] = None) -> Dict:
                         starts_with_bullet = any(line_text.strip().startswith(marker) for marker in ["•", "-", "·", "▪", "▸"])
                         
                         # Cross-item validation: check if this line belongs to next item
+                        # CRITICAL: This prevents including lines from the next bullet
                         belongs_to_next_item = False
-                        if next_item_text:
-                            next_similarity = SequenceMatcher(None, line_text.lower(), next_item_text.lower()).ratio()
-                            remaining_item_text = item_text[len(matched_text_so_far):].strip() if matched_text_so_far else item_text
-                            if remaining_item_text:
-                                current_similarity = SequenceMatcher(None, line_text.lower(), remaining_item_text[:min(len(line_text)*3, len(remaining_item_text))].lower()).ratio()
-                                # If next item is significantly better match, this line belongs to next bullet
-                                belongs_to_next_item = next_similarity > current_similarity + 0.2
+                        if next_item_text and next_item_full_text:
+                            # CRITICAL FIX: Check if line matches the START of the next item
+                            # This is the most reliable indicator that it's a new bullet
+                            # Use first 100 chars of next item (enough to catch the start)
+                            next_item_start = next_item_full_text[:100].strip()
+                            line_text_clean = line_text.strip()
+                            
+                            # Check if line matches the start of next item (case-insensitive)
+                            # Use a sliding window to account for slight differences
+                            if len(line_text_clean) >= 20 and len(next_item_start) >= 20:
+                                # Compare first 50 chars of both (enough to catch the start)
+                                line_start = line_text_clean[:50].lower()
+                                next_start = next_item_start[:50].lower()
+                                
+                                # If line matches the start of next item, it's definitely a new bullet
+                                start_similarity = SequenceMatcher(None, line_start, next_start).ratio()
+                                if start_similarity > 0.7:  # High similarity at start = new bullet
+                                    belongs_to_next_item = True
+                            
+                            # Also check full text similarity as fallback
+                            if not belongs_to_next_item:
+                                next_item_search = next_item_text[:200] if len(next_item_text) > 200 else next_item_text
+                                next_similarity = SequenceMatcher(None, line_text.lower(), next_item_search.lower()).ratio()
+                                
+                                remaining_item_text = item_text[len(matched_text_so_far):].strip() if matched_text_so_far else item_text
+                                if remaining_item_text:
+                                    # Compare line to current item's remaining text
+                                    current_search = remaining_item_text[:min(len(line_text)*3, len(remaining_item_text))]
+                                    current_similarity = SequenceMatcher(None, line_text.lower(), current_search.lower()).ratio()
+                                    
+                                    # If next item is a better match, reject this line
+                                    belongs_to_next_item = next_similarity > current_similarity + 0.15
+                                    
+                                    # Also check: if next similarity is high (>0.5) and current is low (<0.4), definitely belongs to next
+                                    if next_similarity > 0.5 and current_similarity < 0.4:
+                                        belongs_to_next_item = True
+                        
+                        # ADDITIONAL CHECK: If line starts with capital after previous line ended with punctuation,
+                        # it's likely a new bullet (action verbs often start bullets)
+                        if not belongs_to_next_item and matched_text_so_far:
+                            prev_text = matched_text_so_far.strip()
+                            if prev_text and line_text.strip():
+                                # Check if previous text ended with sentence-ending punctuation
+                                if prev_text[-1] in ".!;":
+                                    # Check if current line starts with capital letter
+                                    first_char = line_text.strip()[0] if line_text.strip() else ""
+                                    if first_char.isupper():
+                                        # This is likely a new bullet - be conservative
+                                        # Only accept if gap is VERY small (< 25% of line height)
+                                        conservative_gap_threshold = thresholds.get("typical_line_height", 12.0) * 0.25
+                                        if y_gap > conservative_gap_threshold:
+                                            belongs_to_next_item = True
                         
                         # Use the improved continuation detection with X-position-based bullet marker check
                         is_continuation = _is_likely_continuation(
@@ -1120,10 +1181,6 @@ def extract_line_metrics(pdf_bytes: bytes, latex: Optional[str] = None) -> Dict:
                 
                 line_count = len(y_groups)
                 
-                # DEBUG: Log if we have too many groups (indicates bug)
-                if line_count > 10:
-                    logger.warning(f"Bullet '{item_text[:50]}...': {line_count} Y-groups (expected 1-3), {len(valid_spans)} spans. This suggests spans from wrong lines were included.")
-                
                 # Reconstruct text split by lines for display
                 lines_text = []
                 if y_groups and line_count > 1:
@@ -1181,11 +1238,8 @@ def extract_line_metrics(pdf_bytes: bytes, latex: Optional[str] = None) -> Dict:
                 
                 # Fallback: if we couldn't extract last line coordinates, use overall bullet coordinates
                 # Only use fallback if y_groups is empty or we couldn't extract coordinates from y_groups
-                # This should be rare - log a warning if it happens
+                # Fallback if coordinates couldn't be extracted
                 if last_line_x_start is None or last_line_x_end is None:
-                    if y_groups and len(y_groups) > 0:
-                        # We have y_groups but couldn't extract coordinates - this is unexpected
-                        logger.warning(f"Bullet '{item_text[:50]}...': Could not extract last line X coordinates from {len(y_groups)} Y-groups, using fallback")
                     last_line_x_start = x_start if last_line_x_start is None else last_line_x_start
                     last_line_x_end = x_end if last_line_x_end is None else last_line_x_end
                 
@@ -1894,7 +1948,7 @@ def analyze_layout(
         available_width = content_right - content_left
         # Content boundaries calculated for layout analysis
         
-        # Debug: Log first few bullets in detail
+        # Calculate metrics for first few bullets
         for i, bullet in enumerate(bullets[:3], 1):
             last_line_x_end = bullet.get("last_line_x_end")
             last_line_x_start = bullet.get("last_line_x_start")

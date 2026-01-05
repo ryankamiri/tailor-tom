@@ -450,6 +450,7 @@ def _extract_non_item_latex(latex: str) -> str:
     
     Replaces all \\item content with placeholders to compare structure.
     Also preserves command definitions (\\newcommand, \\renewcommand) exactly.
+    Handles both raw \\item and custom item commands like \\resumeItem.
     
     Args:
         latex: LaTeX source code.
@@ -460,19 +461,155 @@ def _extract_non_item_latex(latex: str) -> str:
     # Extract command definitions and replace with placeholders
     command_defs = _extract_command_definitions(latex)
     
+    # Find all commands that produce items (like \resumeItem)
+    # Parse command definitions to find commands that expand to \item
+    item_producing_commands = set(['item'])  # Always include raw \item
+    
+    for cmd_def in command_defs:
+        # Extract command name and definition
+        # Pattern: \newcommand{\command}[args]{definition} or \renewcommand{\command}[args]{definition}
+        # Handle multi-line definitions by matching braces properly
+        cmd_match = re.search(r'\\(?:new|renew|provide)command\s*\{([^}]+)\}(?:\[[^\]]+\])?\s*\{', cmd_def)
+        if cmd_match:
+            cmd_name = cmd_match.group(1)
+            # Check if definition contains \item (look for \item in the definition part)
+            # The definition starts after the opening brace
+            def_start = cmd_match.end()
+            # Find matching closing brace
+            brace_count = 1
+            i = def_start
+            while i < len(cmd_def) and brace_count > 0:
+                if cmd_def[i] == '{':
+                    brace_count += 1
+                elif cmd_def[i] == '}':
+                    brace_count -= 1
+                i += 1
+            if brace_count == 0:
+                definition = cmd_def[def_start:i-1]  # Exclude closing brace
+                if r'\item' in definition:
+                    item_producing_commands.add(cmd_name)
+    
     # Replace each command definition with a placeholder
     latex_with_placeholders = latex
     for i, cmd_def in enumerate(command_defs):
         placeholder = f"COMMAND_DEF_{i}"
         latex_with_placeholders = latex_with_placeholders.replace(cmd_def, placeholder, 1)
     
-    # Replace \item {content} and \item content with \item {PLACEHOLDER}
-    item_pattern = r'\\item\s*(?:\{[^}]*\}|[^\n\\]+)'
-    replaced = re.sub(item_pattern, r'\\item{PLACEHOLDER}', latex_with_placeholders)
+    # Replace all item commands (both raw \item and custom commands like \resumeItem)
+    # CRITICAL: We need to find items and replace their ENTIRE content, which can span multiple lines
+    # and contain nested commands. We'll find item positions and replace content up to the next item/environment boundary.
+    
+    # Find all item positions in the document
+    item_positions = []
+    
+    # Find all item commands
+    for cmd in item_producing_commands:
+        escaped_cmd = re.escape(cmd)
+        # Match \item (not part of another command) followed by whitespace
+        # Items can be: \item{content} or \item content (without braces)
+        pattern = rf'\\{escaped_cmd}(?![a-zA-Z])(?:\s*\{{|\s+)'
+        for match in re.finditer(pattern, latex_with_placeholders):
+            item_start = match.start()
+            item_cmd_end = match.end()
+            
+            # Check if it's \item{...} or \item content
+            content_start = item_cmd_end
+            if latex_with_placeholders[match.end()-1] == '{':
+                # It's \item{content} - find matching brace
+                brace_depth = 1
+                pos = match.end()
+                while pos < len(latex_with_placeholders) and brace_depth > 0:
+                    if latex_with_placeholders[pos] == '{':
+                        brace_depth += 1
+                    elif latex_with_placeholders[pos] == '}':
+                        brace_depth -= 1
+                    pos += 1
+                if brace_depth == 0:
+                    # Found matching brace - replace content inside
+                    content_end = pos - 1  # Position of closing brace
+                    item_positions.append({
+                        'start': item_start,
+                        'content_start': match.end(),  # After opening brace
+                        'content_end': content_end,  # Before closing brace
+                        'end': pos,  # After closing brace
+                        'has_braces': True
+                    })
+                    continue
+            
+            # It's \item content (without braces) - find where content ends
+            # Look for: next \item, \end{itemize}, \end{enumerate}, \end{subitems}, \end{resume_subsection}, \begin{resume_section}
+            content_end = len(latex_with_placeholders)
+            
+            # Check for next item
+            next_item_pattern = rf'\\item(?![a-zA-Z])(?:\s*\{{|\s+)'
+            next_item_match = re.search(next_item_pattern, latex_with_placeholders[content_start:])
+            if next_item_match:
+                content_end = min(content_end, content_start + next_item_match.start())
+            
+            # Check for environment boundaries
+            boundaries = [
+                latex_with_placeholders.find('\\end{itemize}', content_start),
+                latex_with_placeholders.find('\\end{enumerate}', content_start),
+                latex_with_placeholders.find('\\end{subitems}', content_start),
+                latex_with_placeholders.find('\\end{resume_subsection}', content_start),
+                latex_with_placeholders.find('\\begin{resume_section}', content_start),
+            ]
+            valid_boundaries = [b for b in boundaries if b != -1 and b < content_end]
+            if valid_boundaries:
+                content_end = min(content_end, min(valid_boundaries))
+            
+            item_positions.append({
+                'start': item_start,
+                'content_start': content_start,
+                'content_end': content_end,
+                'end': content_end,
+                'has_braces': False
+            })
+    
+    # Sort by position (reverse order so we can replace from end to start without affecting positions)
+    item_positions.sort(key=lambda x: x['start'], reverse=True)
+    
+    # Replace each item's content with PLACEHOLDER
+    for idx, item_info in enumerate(item_positions):
+        if item_info['has_braces']:
+            # \item{content} -> \item{PLACEHOLDER}
+            original_content = latex_with_placeholders[item_info['content_start']:item_info['content_end']]
+            latex_with_placeholders = (
+                latex_with_placeholders[:item_info['content_start']] +
+                'PLACEHOLDER' +
+                latex_with_placeholders[item_info['content_end']:]
+            )
+        else:
+            # \item content -> \item{PLACEHOLDER}
+            content = latex_with_placeholders[item_info['content_start']:item_info['content_end']].strip()
+            if content:  # Only replace if there's content
+                # Replace \item content with \item{PLACEHOLDER}
+                latex_with_placeholders = (
+                    latex_with_placeholders[:item_info['start']] +
+                    '\\item{PLACEHOLDER}' +
+                    latex_with_placeholders[item_info['end']:]
+                )
+    
+    replaced = latex_with_placeholders
     
     # Restore command definitions
     for i, cmd_def in enumerate(command_defs):
         replaced = replaced.replace(f"COMMAND_DEF_{i}", cmd_def)
+    
+    # Normalize whitespace - collapse multiple spaces/newlines to single ones
+    # This handles cases where LLM only changes whitespace formatting (which is not a structural change)
+    
+    # First, normalize all whitespace sequences
+    replaced = re.sub(r'[ \t]+', ' ', replaced)  # Multiple spaces/tabs -> single space
+    replaced = re.sub(r'[ \t]*\n[ \t]*', '\n', replaced)  # Normalize newlines (remove spaces around them)
+    replaced = re.sub(r'\n\n\n+', '\n\n', replaced)  # Multiple blank lines -> double newline max
+    replaced = re.sub(r'[ \t]+$', '', replaced, flags=re.MULTILINE)  # Remove trailing spaces on lines
+    
+    # Normalize trailing newlines - ensure both end with exactly one newline (or no newline)
+    # Remove all trailing newlines, then add exactly one
+    replaced_before_trailing = replaced
+    replaced = replaced.rstrip('\n')
+    replaced = replaced + '\n'  # Add exactly one trailing newline
     
     return replaced
 
@@ -578,15 +715,29 @@ def _validate_latex_structure(optimized_latex: str, original_latex: str) -> Tupl
     Returns:
         Tuple of (is_valid, error_message). is_valid is True if structure preserved.
     """
+    
     # First, check command definitions separately (most critical)
     original_cmd_defs = sorted(_extract_command_definitions(original_latex))
     optimized_cmd_defs = sorted(_extract_command_definitions(optimized_latex))
     
+    
     if original_cmd_defs != optimized_cmd_defs:
+        logger.error("[STRUCTURE VALIDATION] Command definitions differ!")
+        logger.error(f"[STRUCTURE VALIDATION] Original commands: {original_cmd_defs}")
+        logger.error(f"[STRUCTURE VALIDATION] Optimized commands: {optimized_cmd_defs}")
+        
         # Find which command was modified
         modified_commands = []
         original_set = set(original_cmd_defs)
         optimized_set = set(optimized_cmd_defs)
+        
+        added_commands = optimized_set - original_set
+        removed_commands = original_set - optimized_set
+        
+        if added_commands:
+            logger.error(f"[STRUCTURE VALIDATION] Added commands: {added_commands}")
+        if removed_commands:
+            logger.error(f"[STRUCTURE VALIDATION] Removed commands: {removed_commands}")
         
         for cmd in optimized_set - original_set:
             # Extract command name (first {command} after \newcommand, etc.)
@@ -609,6 +760,59 @@ def _validate_latex_structure(optimized_latex: str, original_latex: str) -> Tupl
     optimized_structure = _extract_non_item_latex(optimized_latex)
     
     if original_structure != optimized_structure:
+        logger.error("[STRUCTURE VALIDATION] LaTeX structure differs!")
+        logger.error("=" * 80)
+        logger.error("[STRUCTURE VALIDATION] ORIGINAL STRUCTURE (first 2000 chars):")
+        logger.error(original_structure[:2000])
+        logger.error("=" * 80)
+        logger.error("[STRUCTURE VALIDATION] OPTIMIZED STRUCTURE (first 2000 chars):")
+        logger.error(optimized_structure[:2000])
+        logger.error("=" * 80)
+        
+        # Find the first difference
+        import difflib
+        diff = list(difflib.unified_diff(
+            original_structure.splitlines(keepends=True),
+            optimized_structure.splitlines(keepends=True),
+            fromfile='original',
+            tofile='optimized',
+            lineterm='',
+            n=3
+        ))
+        
+        if diff:
+            logger.error("[STRUCTURE VALIDATION] First differences found:")
+            for line in diff[:50]:  # Show first 50 lines of diff
+                logger.error(f"[STRUCTURE VALIDATION] {line.rstrip()}")
+        
+        # Also try to find character-level differences
+        min_len = min(len(original_structure), len(optimized_structure))
+        first_diff_pos = None
+        for i in range(min_len):
+            if original_structure[i] != optimized_structure[i]:
+                first_diff_pos = i
+                break
+        
+        if first_diff_pos is not None:
+            logger.error(f"[STRUCTURE VALIDATION] First character difference at position {first_diff_pos}")
+            start = max(0, first_diff_pos - 100)
+            end = min(len(original_structure), first_diff_pos + 100)
+            logger.error(f"[STRUCTURE VALIDATION] Original context (pos {start}-{end}):")
+            logger.error(repr(original_structure[start:end]))
+            logger.error(f"[STRUCTURE VALIDATION] Optimized context (pos {start}-{end}):")
+            logger.error(repr(optimized_structure[start:end]))
+        elif len(original_structure) != len(optimized_structure):
+            logger.error(f"[STRUCTURE VALIDATION] Structures have different lengths: {len(original_structure)} vs {len(optimized_structure)}")
+            logger.error(f"[STRUCTURE VALIDATION] Original repr (last 200): {repr(original_structure[-200:])}")
+            logger.error(f"[STRUCTURE VALIDATION] Optimized repr (last 200): {repr(optimized_structure[-200:])}")
+            if len(original_structure) < len(optimized_structure):
+                logger.error(f"[STRUCTURE VALIDATION] Optimized has {len(optimized_structure) - len(original_structure)} extra characters at end")
+                logger.error(f"[STRUCTURE VALIDATION] Extra content: {repr(optimized_structure[len(original_structure):len(original_structure)+200])}")
+            else:
+                logger.error(f"[STRUCTURE VALIDATION] Original has {len(original_structure) - len(optimized_structure)} extra characters at end")
+                logger.error(f"[STRUCTURE VALIDATION] Missing content: {repr(original_structure[len(optimized_structure):len(optimized_structure)+200])}")
+        
+        logger.error("=" * 80)
         return False, "LaTeX structure was modified (only \\item content should change)"
     
     return True, ""
@@ -1208,9 +1412,11 @@ class ResumeOptimizerPipeline(dspy.Module):
             phase1_latex = _fix_latex_issues(phase1_latex)
 
         # Validate LaTeX structure (only \item content should change)
+        logger.info(f"[Phase 1] Validating LaTeX structure (original length: {len(resume_latex)}, optimized length: {len(phase1_latex)})")
         structure_valid, structure_error = _validate_latex_structure(phase1_latex, resume_latex)
         if not structure_valid:
-            logger.error(f"Phase 1 LaTeX structure validation failed: {structure_error}")
+            logger.error(f"[Phase 1] LaTeX structure validation failed: {structure_error}")
+            logger.error(f"[Phase 1] This is a critical error - the LLM modified LaTeX structure when it should only change \\item content")
             return OptimizationResult(
                 success=False,
                 original_latex=resume_latex,
@@ -1219,6 +1425,7 @@ class ResumeOptimizerPipeline(dspy.Module):
                 error_message=f"Phase 1 structure validation failed: {structure_error}",
                 filename=None,
             )
+        logger.info(f"[Phase 1] LaTeX structure validation passed ✓")
 
         # Validate Skills and Education sections unchanged
         skills_preserved = _validate_section_preservation(phase1_latex, resume_latex, "Skills")
@@ -1246,6 +1453,7 @@ class ResumeOptimizerPipeline(dspy.Module):
                 )
 
         # Phase 2: Bullet Condensation (check if needed)
+        logger.info(f"[Phase 2] Checking if Phase 2 is needed (Phase 1 pages: {phase1_compile.page_count}, target: {self.target_pages})")
         phase1_quality = check_quality(
             pdf_bytes=phase1_compile.pdf_bytes,
             target_pages=self.target_pages,
@@ -1253,8 +1461,11 @@ class ResumeOptimizerPipeline(dspy.Module):
             latex=phase1_latex,
         )
         
+        logger.info(f"[Phase 2] Phase 1 quality check - passes: {phase1_quality.passes}, issues: {phase1_quality.issues_summary if not phase1_quality.passes else 'None'}")
+        
         # Run Phase 2 if: (1) over target pages OR (2) has quality issues (e.g., long bullets)
         if phase1_compile.page_count <= self.target_pages and phase1_quality.passes:
+            logger.info(f"[Phase 2] Skipping Phase 2 - already at target pages ({phase1_compile.page_count}) and quality passes")
             # Already at target pages and no quality issues - return early
             return OptimizationResult(
                 success=True,
@@ -1268,6 +1479,7 @@ class ResumeOptimizerPipeline(dspy.Module):
             )
 
         # Phase 2: Bullet Condensation
+        logger.info(f"[Phase 2] Starting bullet condensation (max_iterations: {self.max_iterations}, target_pages: {self.target_pages}, max_bullet_lines: {self.max_bullet_lines})")
         current_latex = phase1_latex
         current_compile = phase1_compile
         last_valid_latex = phase1_latex
@@ -1277,13 +1489,17 @@ class ResumeOptimizerPipeline(dspy.Module):
         # Phase 2: Bullet Condensation
         phase2_iterations_completed = 0
         for iteration in range(self.max_iterations):
+            logger.info(f"[Phase 2] Starting iteration {iteration + 1}/{self.max_iterations}")
             # Get layout analysis
             current_pages = current_compile.page_count
+            logger.info(f"[Phase 2] Iteration {iteration + 1}: Current pages: {current_pages}, target: {self.target_pages}")
             
             # Get bullets data with utilization calculated
             # Extract bullets and calculate utilization using same logic as analyze_layout
+            logger.info(f"[Phase 2] Iteration {iteration + 1}: Extracting bullet metrics from PDF")
             bullet_metrics = extract_line_metrics(current_compile.pdf_bytes, latex=current_latex)
             bullets_data = bullet_metrics.get("bullets", [])
+            logger.info(f"[Phase 2] Iteration {iteration + 1}: Found {len(bullets_data)} bullets")
             
             # Calculate utilization for bullets (same logic as analyze_layout)
             doc = fitz.open(stream=current_compile.pdf_bytes, filetype="pdf")
@@ -1337,6 +1553,7 @@ class ResumeOptimizerPipeline(dspy.Module):
                 doc.close()
             
             # Filter qualifying bullets (includes long bullets and page reduction candidates)
+            logger.info(f"[Phase 2] Iteration {iteration + 1}: Filtering qualifying bullets")
             qualifying_bullets_list = _filter_qualifying_bullets(
                 {"bullets": bullets_data},
                 current_pages=current_pages,
@@ -1345,10 +1562,14 @@ class ResumeOptimizerPipeline(dspy.Module):
             )
             
             if not qualifying_bullets_list:
+                logger.info(f"[Phase 2] Iteration {iteration + 1}: No qualifying bullets found, stopping Phase 2")
                 phase2_iterations_completed = iteration + 1
                 break
             
+            logger.info(f"[Phase 2] Iteration {iteration + 1}: Found {len(qualifying_bullets_list)} qualifying bullets to condense")
+            
             # Format qualifying bullets for LLM with word count targets
+            logger.info(f"[Phase 2] Iteration {iteration + 1}: Formatting qualifying bullets for LLM")
             qualifying_bullets_str = _format_qualifying_bullets(
                 qualifying_bullets_list,
                 current_pages=current_pages,
@@ -1356,9 +1577,8 @@ class ResumeOptimizerPipeline(dspy.Module):
                 max_bullet_lines=self.max_bullet_lines,
             )
             
-            # Found qualifying bullets to condense (no log needed)
-            
             # Call bullet condenser
+            logger.info(f"[Phase 2] Iteration {iteration + 1}: Calling bullet condenser API (qualifying bullets: {len(qualifying_bullets_list)})")
             try:
                 phase2_result = self.bullet_condenser(
                     resume_latex=current_latex,
@@ -1366,6 +1586,7 @@ class ResumeOptimizerPipeline(dspy.Module):
                     current_pages=current_pages,
                     qualifying_bullets=qualifying_bullets_str,
                 )
+                logger.info(f"[Phase 2] Iteration {iteration + 1}: Bullet condenser API call completed successfully")
                 
                 current_latex = _fix_latex_issues(phase2_result.optimized_latex)
                 
@@ -1390,19 +1611,22 @@ class ResumeOptimizerPipeline(dspy.Module):
                 continue
             
             # Compile and validate
-            # Compiling LaTeX to PDF (no log needed for each iteration)
+            logger.info(f"[Phase 2] Iteration {iteration + 1}: Compiling LaTeX to PDF")
             current_compile = compile_latex(current_latex)
             
             if not current_compile.success:
-                logger.warning(f"Compilation failed in Phase 2 iteration {iteration + 1}")
+                logger.warning(f"[Phase 2] Iteration {iteration + 1}: Compilation failed, attempting fixes")
                 current_latex = _fix_latex_issues(current_latex)
                 current_compile = compile_latex(current_latex)
                 if not current_compile.success:
-                    logger.error(f"Still failed after fixes, reverting to last valid")
+                    logger.error(f"[Phase 2] Iteration {iteration + 1}: Still failed after fixes, reverting to last valid")
                     current_latex = last_valid_latex
                     continue
 
+            logger.info(f"[Phase 2] Iteration {iteration + 1}: Compilation successful, pages: {current_compile.page_count}")
+
             # Quality check
+            logger.info(f"[Phase 2] Iteration {iteration + 1}: Checking quality (pages: {current_compile.page_count}, target: {self.target_pages})")
             quality_result = check_quality(
                 pdf_bytes=current_compile.pdf_bytes,
                 target_pages=self.target_pages,
@@ -1410,7 +1634,10 @@ class ResumeOptimizerPipeline(dspy.Module):
                 latex=current_latex,
             )
             
+            logger.info(f"[Phase 2] Iteration {iteration + 1}: Quality check result - passes: {quality_result.passes}, issues: {quality_result.issues_summary if not quality_result.passes else 'None'}")
+            
             if quality_result.passes:
+                logger.info(f"[Phase 2] Iteration {iteration + 1}: Quality check passed, returning success")
                 return OptimizationResult(
                     success=True,
                     original_latex=resume_latex,
@@ -1425,8 +1652,10 @@ class ResumeOptimizerPipeline(dspy.Module):
             last_valid_latex = current_latex
             last_valid_pdf = current_compile.pdf_bytes
             last_quality_result = quality_result
+            logger.info(f"[Phase 2] Iteration {iteration + 1}: Stored as last valid version, continuing to next iteration")
             phase2_iterations_completed = iteration + 1
 
+        logger.info(f"[Phase 2] Completed all {self.max_iterations} iterations, performing final compile and quality check")
         final_compile = compile_latex(current_latex)
         
         if final_compile.success:

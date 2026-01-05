@@ -85,10 +85,10 @@ class Settings(BaseSettings):
 
     # Celery Configuration
     celery_task_time_limit: int = Field(
-        default=600,
+        default=1800,
         ge=60,
         le=3600,
-        description="Maximum time in seconds for a Celery task to complete (10 minutes default)",
+        description="Maximum time in seconds for a Celery task to complete (30 minutes default)",
     )
 
     celery_worker_concurrency: int = Field(
