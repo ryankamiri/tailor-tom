@@ -2,8 +2,10 @@
 
 import json
 import logging
+import time
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
+from threading import Lock
 import redis
 from tailor_tom.config import settings
 
@@ -12,6 +14,12 @@ logger.setLevel(logging.ERROR)  # Only log errors
 
 # Redis client instance
 _redis_client: Optional[redis.Redis] = None
+
+# In-memory cache for job status to reduce Redis reads
+# Cache TTL: 30 seconds (job status doesn't change frequently)
+_JOB_CACHE_TTL = 30  # seconds
+_job_cache: Dict[str, Tuple[Dict[str, Any], float]] = {}  # {job_id: (job_data, timestamp)}
+_cache_lock = Lock()
 
 
 def get_redis_client() -> redis.Redis:
@@ -78,7 +86,10 @@ def create_job(job_id: str, job_data: Dict[str, Any]) -> None:
 
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Get a job from Redis.
+    """Get a job from Redis with in-memory caching to reduce Redis reads.
+    
+    Caches job data for 30 seconds to reduce redundant Redis operations.
+    Cache is automatically invalidated when job status is updated.
     
     Args:
         job_id: Unique job identifier
@@ -86,6 +97,19 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     Returns:
         Job data dictionary or None if not found
     """
+    # Check cache first
+    current_time = time.time()
+    with _cache_lock:
+        if job_id in _job_cache:
+            cached_data, cache_time = _job_cache[job_id]
+            if current_time - cache_time < _JOB_CACHE_TTL:
+                # Cache hit - return cached data
+                return cached_data.copy()  # Return copy to prevent mutation
+            else:
+                # Cache expired - remove it
+                del _job_cache[job_id]
+    
+    # Cache miss or expired - fetch from Redis
     client = get_redis_client()
     key = _get_job_key(job_id)
     
@@ -123,6 +147,16 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
             logger.error(f"Invalid max_iterations value for job {job_id}: {job_data.get('max_iterations')}")
             job_data["max_iterations"] = 3  # Default fallback
     
+    # Store in cache
+    with _cache_lock:
+        _job_cache[job_id] = (job_data.copy(), current_time)
+        # Clean up old cache entries (keep cache size reasonable)
+        if len(_job_cache) > 1000:
+            # Remove oldest 20% of entries
+            sorted_entries = sorted(_job_cache.items(), key=lambda x: x[1][1])
+            for old_job_id, _ in sorted_entries[:200]:
+                del _job_cache[old_job_id]
+    
     return job_data
 
 
@@ -132,6 +166,8 @@ def update_job_status(
     **updates: Any
 ) -> None:
     """Update job status and other fields in Redis.
+    
+    Also invalidates the in-memory cache for this job to ensure fresh data.
     
     Args:
         job_id: Unique job identifier
@@ -158,10 +194,17 @@ def update_job_status(
             client.hset(key, field, json.dumps(value))
         else:
             client.hset(key, field, str(value))
+    
+    # Invalidate cache for this job
+    with _cache_lock:
+        if job_id in _job_cache:
+            del _job_cache[job_id]
 
 
 def delete_job(job_id: str) -> bool:
     """Delete a job from Redis.
+    
+    Also removes the job from the in-memory cache.
     
     Args:
         job_id: Unique job identifier
@@ -173,4 +216,10 @@ def delete_job(job_id: str) -> bool:
     key = _get_job_key(job_id)
     
     deleted = client.delete(key)
+    
+    # Remove from cache
+    with _cache_lock:
+        if job_id in _job_cache:
+            del _job_cache[job_id]
+    
     return deleted > 0

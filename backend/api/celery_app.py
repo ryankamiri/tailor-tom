@@ -78,6 +78,32 @@ celery_app.conf.update(
     worker_max_tasks_per_child=50,  # Restart worker after 50 tasks (memory management)
     worker_disable_rate_limits=False,
     
+    # Broker transport options - optimize Redis connection usage
+    # Reduce connection overhead and polling frequency
+    broker_transport_options={
+        'visibility_timeout': 3600,  # 1 hour - how long task is invisible after being received
+        'fanout_prefix': True,  # Enable fanout for better performance
+        'fanout_patterns': True,  # Enable pattern-based fanout
+        'max_connections': 10,  # Limit connection pool size
+        'retry_policy': {
+            'timeout': 5.0,  # Connection timeout
+        },
+        # Reduce polling frequency by increasing socket timeout
+        # This makes workers wait longer before checking for new tasks
+        'socket_timeout': 30.0,  # Socket timeout (increases time between polls)
+        'socket_connect_timeout': 5.0,
+        'socket_keepalive': True,
+        'socket_keepalive_options': {},
+        # Use connection pooling more efficiently
+        'health_check_interval': 30,  # Check connection health every 30 seconds (instead of default 5)
+    },
+    
+    # Worker polling optimization
+    # Increase the interval between worker polls to reduce Redis reads
+    worker_hijack_root_logger=False,
+    worker_log_format='[%(asctime)s: %(levelname)s/%(processName)s] %(message)s',
+    worker_task_log_format='[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s',
+    
     # Queue routing configuration
     # Routes tasks to specific queues based on CELERY_QUEUE_NAME environment variable
     task_routes={
