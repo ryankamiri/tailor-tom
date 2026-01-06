@@ -16,6 +16,7 @@ import fitz  # PyMuPDF
 from tailor_tom.config import settings
 from tailor_tom.latex_compiler import compile_latex, CompileResult, validate_latex
 from tailor_tom.layout_analyzer import analyze_layout, check_quality, QualityResult, extract_line_metrics
+from api.storage import update_job_status
 
 logger = logging.getLogger(__name__)
 
@@ -1338,6 +1339,7 @@ class ResumeOptimizerPipeline(dspy.Module):
         max_iterations: Optional[int] = None,
         target_pages: Optional[int] = None,
         max_bullet_lines: Optional[int] = None,
+        job_id: Optional[str] = None,
     ):
         """Initialize the optimizer pipeline.
 
@@ -1345,12 +1347,14 @@ class ResumeOptimizerPipeline(dspy.Module):
             max_iterations: Maximum iterations for Phase 2 (bullet condensation) (default: 3).
             target_pages: Target number of pages for the resume (default: 1).
             max_bullet_lines: Maximum lines per bullet point (default: 2).
+            job_id: Optional job ID for status updates (only set status to "processing" when work actually starts).
         """
         super().__init__()
         # Use provided values or defaults (no longer fallback to settings since these come from frontend)
         self.max_iterations = max_iterations if max_iterations is not None else 3
         self.target_pages = target_pages if target_pages is not None else 1
         self.max_bullet_lines = max_bullet_lines if max_bullet_lines is not None else 2
+        self.job_id = job_id
 
         # Two separate optimizers for two-phase approach
         # Using ChainOfThought for better quality: improved keyword integration, professional language, and job description alignment
@@ -1371,6 +1375,11 @@ class ResumeOptimizerPipeline(dspy.Module):
         Returns:
             OptimizationResult with optimized LaTeX and PDF.
         """
+        # Update status to "processing" ONLY when actual work starts (Phase 1 LLM call)
+        # This ensures jobs are only marked as processing when actively being worked on
+        if self.job_id:
+            update_job_status(self.job_id, "processing")
+        
         # Phase 1: ATS Keyword Optimization
         try:
             ats_result = self.ats_optimizer(
@@ -1408,11 +1417,9 @@ class ResumeOptimizerPipeline(dspy.Module):
         # Validate Phase 1 result
         is_valid, validation_error = validate_latex(phase1_latex)
         if not is_valid:
-            logger.warning(f"Phase 1 LaTeX validation failed: {validation_error}")
             phase1_latex = _fix_latex_issues(phase1_latex)
 
         # Validate LaTeX structure (only \item content should change)
-        logger.info(f"[Phase 1] Validating LaTeX structure (original length: {len(resume_latex)}, optimized length: {len(phase1_latex)})")
         structure_valid, structure_error = _validate_latex_structure(phase1_latex, resume_latex)
         if not structure_valid:
             logger.error(f"[Phase 1] LaTeX structure validation failed: {structure_error}")
@@ -1425,19 +1432,14 @@ class ResumeOptimizerPipeline(dspy.Module):
                 error_message=f"Phase 1 structure validation failed: {structure_error}",
                 filename=None,
             )
-        logger.info(f"[Phase 1] LaTeX structure validation passed ✓")
 
         # Validate Skills and Education sections unchanged
         skills_preserved = _validate_section_preservation(phase1_latex, resume_latex, "Skills")
         education_preserved = _validate_section_preservation(phase1_latex, resume_latex, "Education")
         
-        if not skills_preserved or not education_preserved:
-            logger.warning("Phase 1: Skills or Education section was modified (should remain unchanged)")
-        
         phase1_compile = compile_latex(phase1_latex)
         
         if not phase1_compile.success:
-            logger.warning(f"Phase 1 compilation failed: {phase1_compile.error_message}")
             phase1_latex = _fix_latex_issues(phase1_latex)
             phase1_compile = compile_latex(phase1_latex)
             
@@ -1453,7 +1455,6 @@ class ResumeOptimizerPipeline(dspy.Module):
                 )
 
         # Phase 2: Bullet Condensation (check if needed)
-        logger.info(f"[Phase 2] Checking if Phase 2 is needed (Phase 1 pages: {phase1_compile.page_count}, target: {self.target_pages})")
         phase1_quality = check_quality(
             pdf_bytes=phase1_compile.pdf_bytes,
             target_pages=self.target_pages,
@@ -1461,11 +1462,8 @@ class ResumeOptimizerPipeline(dspy.Module):
             latex=phase1_latex,
         )
         
-        logger.info(f"[Phase 2] Phase 1 quality check - passes: {phase1_quality.passes}, issues: {phase1_quality.issues_summary if not phase1_quality.passes else 'None'}")
-        
         # Run Phase 2 if: (1) over target pages OR (2) has quality issues (e.g., long bullets)
         if phase1_compile.page_count <= self.target_pages and phase1_quality.passes:
-            logger.info(f"[Phase 2] Skipping Phase 2 - already at target pages ({phase1_compile.page_count}) and quality passes")
             # Already at target pages and no quality issues - return early
             return OptimizationResult(
                 success=True,
@@ -1479,7 +1477,6 @@ class ResumeOptimizerPipeline(dspy.Module):
             )
 
         # Phase 2: Bullet Condensation
-        logger.info(f"[Phase 2] Starting bullet condensation (max_iterations: {self.max_iterations}, target_pages: {self.target_pages}, max_bullet_lines: {self.max_bullet_lines})")
         current_latex = phase1_latex
         current_compile = phase1_compile
         last_valid_latex = phase1_latex
@@ -1489,17 +1486,13 @@ class ResumeOptimizerPipeline(dspy.Module):
         # Phase 2: Bullet Condensation
         phase2_iterations_completed = 0
         for iteration in range(self.max_iterations):
-            logger.info(f"[Phase 2] Starting iteration {iteration + 1}/{self.max_iterations}")
             # Get layout analysis
             current_pages = current_compile.page_count
-            logger.info(f"[Phase 2] Iteration {iteration + 1}: Current pages: {current_pages}, target: {self.target_pages}")
             
             # Get bullets data with utilization calculated
             # Extract bullets and calculate utilization using same logic as analyze_layout
-            logger.info(f"[Phase 2] Iteration {iteration + 1}: Extracting bullet metrics from PDF")
             bullet_metrics = extract_line_metrics(current_compile.pdf_bytes, latex=current_latex)
             bullets_data = bullet_metrics.get("bullets", [])
-            logger.info(f"[Phase 2] Iteration {iteration + 1}: Found {len(bullets_data)} bullets")
             
             # Calculate utilization for bullets (same logic as analyze_layout)
             doc = fitz.open(stream=current_compile.pdf_bytes, filetype="pdf")
@@ -1553,7 +1546,6 @@ class ResumeOptimizerPipeline(dspy.Module):
                 doc.close()
             
             # Filter qualifying bullets (includes long bullets and page reduction candidates)
-            logger.info(f"[Phase 2] Iteration {iteration + 1}: Filtering qualifying bullets")
             qualifying_bullets_list = _filter_qualifying_bullets(
                 {"bullets": bullets_data},
                 current_pages=current_pages,
@@ -1562,14 +1554,10 @@ class ResumeOptimizerPipeline(dspy.Module):
             )
             
             if not qualifying_bullets_list:
-                logger.info(f"[Phase 2] Iteration {iteration + 1}: No qualifying bullets found, stopping Phase 2")
                 phase2_iterations_completed = iteration + 1
                 break
             
-            logger.info(f"[Phase 2] Iteration {iteration + 1}: Found {len(qualifying_bullets_list)} qualifying bullets to condense")
-            
             # Format qualifying bullets for LLM with word count targets
-            logger.info(f"[Phase 2] Iteration {iteration + 1}: Formatting qualifying bullets for LLM")
             qualifying_bullets_str = _format_qualifying_bullets(
                 qualifying_bullets_list,
                 current_pages=current_pages,
@@ -1578,7 +1566,6 @@ class ResumeOptimizerPipeline(dspy.Module):
             )
             
             # Call bullet condenser
-            logger.info(f"[Phase 2] Iteration {iteration + 1}: Calling bullet condenser API (qualifying bullets: {len(qualifying_bullets_list)})")
             try:
                 phase2_result = self.bullet_condenser(
                     resume_latex=current_latex,
@@ -1586,7 +1573,6 @@ class ResumeOptimizerPipeline(dspy.Module):
                     current_pages=current_pages,
                     qualifying_bullets=qualifying_bullets_str,
                 )
-                logger.info(f"[Phase 2] Iteration {iteration + 1}: Bullet condenser API call completed successfully")
                 
                 current_latex = _fix_latex_issues(phase2_result.optimized_latex)
                 
@@ -1606,16 +1592,13 @@ class ResumeOptimizerPipeline(dspy.Module):
                     logger.error(f"Phase 2 iteration {iteration + 1}: Token limit exceeded.")
                 
                 # Continue with last valid version
-                logger.warning(f"Phase 2 iteration {iteration + 1}: Reverting to last valid version due to DSPy error")
                 current_latex = last_valid_latex
                 continue
             
             # Compile and validate
-            logger.info(f"[Phase 2] Iteration {iteration + 1}: Compiling LaTeX to PDF")
             current_compile = compile_latex(current_latex)
             
             if not current_compile.success:
-                logger.warning(f"[Phase 2] Iteration {iteration + 1}: Compilation failed, attempting fixes")
                 current_latex = _fix_latex_issues(current_latex)
                 current_compile = compile_latex(current_latex)
                 if not current_compile.success:
@@ -1623,10 +1606,7 @@ class ResumeOptimizerPipeline(dspy.Module):
                     current_latex = last_valid_latex
                     continue
 
-            logger.info(f"[Phase 2] Iteration {iteration + 1}: Compilation successful, pages: {current_compile.page_count}")
-
             # Quality check
-            logger.info(f"[Phase 2] Iteration {iteration + 1}: Checking quality (pages: {current_compile.page_count}, target: {self.target_pages})")
             quality_result = check_quality(
                 pdf_bytes=current_compile.pdf_bytes,
                 target_pages=self.target_pages,
@@ -1634,10 +1614,7 @@ class ResumeOptimizerPipeline(dspy.Module):
                 latex=current_latex,
             )
             
-            logger.info(f"[Phase 2] Iteration {iteration + 1}: Quality check result - passes: {quality_result.passes}, issues: {quality_result.issues_summary if not quality_result.passes else 'None'}")
-            
             if quality_result.passes:
-                logger.info(f"[Phase 2] Iteration {iteration + 1}: Quality check passed, returning success")
                 return OptimizationResult(
                     success=True,
                     original_latex=resume_latex,
@@ -1652,10 +1629,9 @@ class ResumeOptimizerPipeline(dspy.Module):
             last_valid_latex = current_latex
             last_valid_pdf = current_compile.pdf_bytes
             last_quality_result = quality_result
-            logger.info(f"[Phase 2] Iteration {iteration + 1}: Stored as last valid version, continuing to next iteration")
             phase2_iterations_completed = iteration + 1
 
-        logger.info(f"[Phase 2] Completed all {self.max_iterations} iterations, performing final compile and quality check")
+        # Completed all iterations, performing final compile and quality check
         final_compile = compile_latex(current_latex)
         
         if final_compile.success:
@@ -1734,6 +1710,7 @@ def optimize_resume(
     max_iterations: Optional[int] = None,
     target_pages: Optional[int] = None,
     max_bullet_lines: Optional[int] = None,
+    job_id: Optional[str] = None,
 ) -> OptimizationResult:
     """Convenience function to optimize a resume.
 
@@ -1746,6 +1723,7 @@ def optimize_resume(
         max_iterations: Maximum iterations (default: 3).
         target_pages: Target page count (default: 1).
         max_bullet_lines: Maximum lines per bullet point (default: 2).
+        job_id: Optional job ID for status updates (only set status to "processing" when work actually starts).
 
     Returns:
         OptimizationResult with optimized resume.
@@ -1759,6 +1737,7 @@ def optimize_resume(
         max_iterations=max_iterations,
         target_pages=target_pages,
         max_bullet_lines=max_bullet_lines,
+        job_id=job_id,  # Pass job_id to pipeline for status updates
     )
 
     return pipeline(resume_latex, job_description)

@@ -119,7 +119,8 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     
     # Convert empty strings back to None (we stored None as "" in create_job)
     # Handle all optional fields that could be None
-    optional_string_fields = ["result", "completed_at", "error_message", "company_name"]
+    # Note: job_description, first_name, last_name are required and should not be None
+    optional_string_fields = ["result", "completed_at", "error_message"]
     for field in optional_string_fields:
         if job_data.get(field) == "":
             job_data[field] = None
@@ -142,10 +143,17 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     
     if job_data.get("max_iterations"):
         try:
-            job_data["max_iterations"] = int(job_data["max_iterations"])
+            max_iter = int(job_data["max_iterations"])
+            job_data["max_iterations"] = max_iter if max_iter > 0 else None
         except (ValueError, TypeError):
             logger.error(f"Invalid max_iterations value for job {job_id}: {job_data.get('max_iterations')}")
-            job_data["max_iterations"] = 3  # Default fallback
+            job_data["max_iterations"] = None
+    
+    if job_data.get("max_bullet_lines"):
+        try:
+            job_data["max_bullet_lines"] = int(job_data["max_bullet_lines"])
+        except (ValueError, TypeError):
+            job_data["max_bullet_lines"] = 2  # Default fallback
     
     # Store in cache
     with _cache_lock:
@@ -223,3 +231,73 @@ def delete_job(job_id: str) -> bool:
             del _job_cache[job_id]
     
     return deleted > 0
+
+
+def get_orphaned_processing_jobs() -> list[Dict[str, Any]]:
+    """Get all jobs with status 'processing' (orphaned after worker restart).
+    
+    Returns:
+        List of job dictionaries with all fields needed to re-enqueue
+    """
+    client = get_redis_client()
+    
+    # Scan for all job keys
+    orphaned_jobs = []
+    cursor = 0
+    pattern = "job:*"
+    
+    while True:
+        cursor, keys = client.scan(cursor, match=pattern, count=100)
+        for key in keys:
+            # Get job data
+            job_data = client.hgetall(key)
+            if not job_data:
+                continue
+            
+            # Check if status is "processing"
+            if job_data.get("status") == "processing":
+                # Extract job_id from key (format: "job:{job_id}")
+                job_id = key[4:]  # Remove "job:" prefix
+                
+                # Parse job data (similar to get_job)
+                # Convert empty strings to None
+                optional_string_fields = ["result", "completed_at", "error_message"]
+                for field in optional_string_fields:
+                    if job_data.get(field) == "":
+                        job_data[field] = None
+                
+                # Convert result JSON if present
+                if job_data.get("result"):
+                    try:
+                        job_data["result"] = json.loads(job_data["result"])
+                    except json.JSONDecodeError:
+                        job_data["result"] = None
+                
+                # Convert numeric fields
+                if job_data.get("target_pages"):
+                    try:
+                        job_data["target_pages"] = int(job_data["target_pages"])
+                    except (ValueError, TypeError):
+                        job_data["target_pages"] = 1
+                
+                if job_data.get("max_iterations"):
+                    try:
+                        max_iter = int(job_data["max_iterations"])
+                        job_data["max_iterations"] = max_iter if max_iter > 0 else None
+                    except (ValueError, TypeError):
+                        job_data["max_iterations"] = None
+                
+                if job_data.get("max_bullet_lines"):
+                    try:
+                        job_data["max_bullet_lines"] = int(job_data["max_bullet_lines"])
+                    except (ValueError, TypeError):
+                        job_data["max_bullet_lines"] = 2  # Default
+                
+                # Add job_id to the dict
+                job_data["job_id"] = job_id
+                orphaned_jobs.append(job_data)
+        
+        if cursor == 0:
+            break
+    
+    return orphaned_jobs

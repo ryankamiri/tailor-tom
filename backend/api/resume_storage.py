@@ -59,17 +59,21 @@ def _generate_filename(first_name: str, last_name: str, user_id: str) -> str:
     return f"{first_clean}_{last_clean}_{user_id_short}_resume.pdf"
 
 
-def save_user_resume(first_name: str, last_name: str, user_id: str, latex: str) -> str:
+def save_user_resume(first_name: str, last_name: str, user_id: str, latex: str, company_name: Optional[str] = None) -> str:
     """Save user's resume LaTeX to Redis.
     
     Uses firstname_lastname_useruuid as the resume_id, ensuring one resume per user.
     Latest save overwrites previous resume for the same user.
+    
+    Preserves existing filename if resume already exists (to maintain FIRST_NAME_LAST_NAME_COMPANY_NAME format).
+    If company_name is provided and resume doesn't exist, uses it in filename.
     
     Args:
         first_name: User's first name
         last_name: User's last name
         user_id: User's unique identifier (UUID)
         latex: LaTeX content of the resume
+        company_name: Optional company name for filename (used if resume is new)
         
     Returns:
         resume_id: Unique identifier for the saved resume (firstname_lastname_useruuid)
@@ -80,8 +84,20 @@ def save_user_resume(first_name: str, last_name: str, user_id: str, latex: str) 
     resume_id = _generate_resume_id(first_name, last_name, user_id)
     key = _get_resume_key(resume_id)
     
-    # Generate filename
-    filename = _generate_filename(first_name, last_name, user_id)
+    # Check if resume already exists - preserve existing filename if it does
+    existing_resume = client.hgetall(key)
+    if existing_resume and existing_resume.get("filename"):
+        # Preserve existing filename (maintains FIRST_NAME_LAST_NAME_COMPANY_NAME format)
+        filename = existing_resume["filename"]
+    elif company_name:
+        # New resume with company_name - use FIRST_NAME_LAST_NAME_COMPANY_NAME format
+        safe_first = re.sub(r'[^\w]', '', first_name).title() if first_name else "Unknown"
+        safe_last = re.sub(r'[^\w]', '', last_name).title() if last_name else "Unknown"
+        safe_company = re.sub(r'[^\w]', '', company_name).title() if company_name else "Resume"
+        filename = f"{safe_first}_{safe_last}_{safe_company}.pdf"
+    else:
+        # New resume without company_name - use default format
+        filename = _generate_filename(first_name, last_name, user_id)
     
     # Prepare data
     created_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')

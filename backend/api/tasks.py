@@ -4,13 +4,95 @@ import logging
 from datetime import datetime, timezone
 from billiard.exceptions import TimeLimitExceeded
 from celery.exceptions import SoftTimeLimitExceeded
+from celery.signals import worker_ready
 from api.celery_app import celery_app
-from api.storage import update_job_status, get_job
+from api.storage import update_job_status, get_job, get_orphaned_processing_jobs
 from tailor_tom.optimizer import optimize_resume, configure_dspy
 from tailor_tom.config import settings
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)  # Only log errors for Celery tasks
+
+
+@worker_ready.connect
+def configure_worker(sender, **kwargs):
+    """Configure worker on startup.
+    
+    Configures DSPy globally for the worker process and recovers orphaned jobs.
+    If DSPy configuration fails, the worker will crash (as it should).
+    """
+    # Configure DSPy globally for this worker process
+    # DSPy settings are process-local, so configure once when worker starts
+    # If this fails, let it crash - worker cannot function without DSPy
+    configure_dspy()
+    
+    # Recover orphaned 'processing' jobs
+    try:
+        # Get all jobs stuck in 'processing' state
+        orphaned_jobs = get_orphaned_processing_jobs()
+        
+        if not orphaned_jobs:
+            return
+        
+        logger.error(f"[worker_ready] Found {len(orphaned_jobs)} orphaned 'processing' jobs, re-enqueuing...")
+        
+        queue_name = settings.celery_queue_name
+        re_enqueued = 0
+        
+        for job_data in orphaned_jobs:
+            job_id = job_data.get("job_id")
+            if not job_id:
+                continue
+            
+            # Check if we have all required fields to re-enqueue
+            required_fields = [
+                "original_latex", "job_description", "target_pages",
+                "max_bullet_lines", "first_name", "last_name", "company_name"
+            ]
+            missing_fields = [f for f in required_fields if not job_data.get(f)]
+            
+            if missing_fields:
+                logger.error(
+                    f"[worker_ready] Cannot re-enqueue job {job_id}: missing fields {missing_fields}. "
+                    f"Resetting to 'pending' status."
+                )
+                # Reset to pending - if task is still in queue (task_acks_late), it will be redelivered
+                update_job_status(job_id, "pending")
+                continue
+            
+            try:
+                # Re-enqueue the task with all stored parameters
+                optimize_resume_task.apply_async(
+                    args=[],
+                    kwargs={
+                        'job_id': job_id,
+                        'resume_latex': job_data["original_latex"],
+                        'job_description': job_data["job_description"],
+                        'target_pages': job_data["target_pages"],
+                        'max_iterations': job_data.get("max_iterations"),
+                        'max_bullet_lines': job_data["max_bullet_lines"],
+                        'first_name': job_data["first_name"],
+                        'last_name': job_data["last_name"],
+                        'company_name': job_data["company_name"],
+                    },
+                    queue=queue_name,
+                )
+                
+                # Reset status to pending (task will set it to processing when it starts)
+                update_job_status(job_id, "pending")
+                re_enqueued += 1
+                
+            except Exception as e:
+                logger.error(f"[worker_ready] Failed to re-enqueue job {job_id}: {e}")
+                # Still reset to pending in case task is in queue
+                update_job_status(job_id, "pending")
+        
+        if re_enqueued > 0:
+            logger.error(f"[worker_ready] Successfully re-enqueued {re_enqueued} orphaned jobs")
+    
+    except Exception as e:
+        # Don't let recovery errors prevent worker from starting
+        logger.error(f"[worker_ready] Error during orphaned job recovery: {e}")
 
 
 def _on_task_failure(self, exc, task_id, args, kwargs, einfo):
@@ -117,19 +199,16 @@ def optimize_resume_task(
         if job.get("status") == "failed" and job.get("error_message") == "Job cancelled by user":
             return
         
-        # Update status to processing
-        update_job_status(job_id, "processing")
-        
-        # Configure DSPy in this worker process (DSPy settings are process-local)
-        configure_dspy()
-        
+        # DSPy is configured globally when worker starts (see @worker_ready.connect)
         # Run optimization
+        # Status will be updated to "processing" at the start of Phase 1 (actual work begins)
         result = optimize_resume(
             resume_latex=resume_latex,
             job_description=job_description,
             target_pages=target_pages,
             max_iterations=max_iterations,
             max_bullet_lines=max_bullet_lines,
+            job_id=job_id,  # Pass job_id so optimizer can update status when work actually starts
         )
         
         if result.success:

@@ -49,6 +49,7 @@ async def create_optimization_job(
     job_id = generate_job_id(request.first_name, request.last_name)
     
     # Create job in Redis
+    # Store all task parameters so we can recover/re-enqueue if worker crashes
     created_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     create_job(
         job_id,
@@ -62,6 +63,10 @@ async def create_optimization_job(
             "company_name": request.company_name,
             "target_pages": request.target_pages,
             "max_iterations": request.max_iterations,
+            "job_description": request.job_description,
+            "max_bullet_lines": str(request.max_bullet_lines),
+            "first_name": request.first_name,
+            "last_name": request.last_name,
         }
     )
     
