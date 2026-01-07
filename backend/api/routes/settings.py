@@ -27,6 +27,7 @@ async def save_resume_from_settings(request: SaveResumeRequest):
     try:
         # Validate that names are provided
         if not request.first_name.strip() or not request.last_name.strip():
+            logger.error("Missing first name or last name in save resume request")
             raise HTTPException(
                 status_code=400,
                 detail="First name and last name are required",
@@ -34,6 +35,7 @@ async def save_resume_from_settings(request: SaveResumeRequest):
         
         # Validate that user_id is provided
         if not request.user_id.strip():
+            logger.error("Missing user_id in save resume request")
             raise HTTPException(
                 status_code=400,
                 detail="User ID is required",
@@ -41,6 +43,7 @@ async def save_resume_from_settings(request: SaveResumeRequest):
         
         # Validate that LaTeX is provided
         if not request.latex.strip():
+            logger.error("Missing LaTeX content in save resume request")
             raise HTTPException(
                 status_code=400,
                 detail="LaTeX content is required",
@@ -84,6 +87,7 @@ async def delete_resume_from_settings(request: DeleteResumeRequest):
     try:
         # Validate that user_id is provided
         if not request.user_id.strip():
+            logger.error("Missing user_id in delete resume request")
             raise HTTPException(
                 status_code=400,
                 detail="User ID is required",

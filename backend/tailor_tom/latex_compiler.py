@@ -136,6 +136,55 @@ def _check_pdflatex_available() -> bool:
     return _find_tex_engine("pdflatex") is not None
 
 
+def _extract_latex_error(latex_log: str) -> str:
+    """Extract meaningful error messages from LaTeX log file.
+    
+    Args:
+        latex_log: Full LaTeX compilation log.
+    
+    Returns:
+        Extracted error message with context.
+    """
+    if not latex_log:
+        return "Unknown compilation error"
+    
+    lines = latex_log.split("\n")
+    error_lines = []
+    error_context = []
+    
+    # Find all error lines (marked with "!")
+    for i, line in enumerate(lines):
+        if "!" in line:
+            error_lines.append(i)
+            # Collect context: 2 lines before and 3 lines after
+            start = max(0, i - 2)
+            end = min(len(lines), i + 4)
+            context = lines[start:end]
+            error_context.extend(context)
+            error_context.append("---")  # Separator between errors
+    
+    if error_context:
+        # Remove duplicate consecutive lines
+        cleaned = []
+        for line in error_context:
+            if line.strip() and (not cleaned or line != cleaned[-1]):
+                cleaned.append(line)
+        return "\n".join(cleaned[:20])  # Limit to first 20 lines
+    
+    # Fallback: look for common error patterns
+    for line in lines:
+        if any(pattern in line.lower() for pattern in [
+            "illegal unit",
+            "undefined control sequence",
+            "missing $",
+            "fatal error",
+            "emergency stop"
+        ]):
+            return line
+    
+    return "Unknown compilation error"
+
+
 def compile_latex(
     content: str,
     timeout: Optional[int] = None,
@@ -207,11 +256,8 @@ def compile_latex(
             if not pdf_path.exists():
                 error_msg = result.stderr.decode("utf-8", errors="ignore")
                 if not error_msg and latex_log:
-                    # Extract error from log
-                    error_lines = [
-                        line for line in latex_log.split("\n") if "!" in line
-                    ]
-                    error_msg = "\n".join(error_lines) if error_lines else "Unknown compilation error"
+                    # Extract error from log with better context
+                    error_msg = _extract_latex_error(latex_log)
                 
                 return CompileResult(
                     success=False,

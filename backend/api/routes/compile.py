@@ -29,15 +29,26 @@ async def validate_latex_compile(request: ValidateRequest):
     This endpoint is useful for validating LaTeX syntax before saving,
     without requiring a job ID.
     """
-    compile_result = compile_latex(request.latex)
-    
-    if not compile_result.success:
+    try:
+        compile_result = compile_latex(request.latex)
+        
+        if not compile_result.success:
+            error_msg = compile_result.error_message or "LaTeX compilation failed"
+            logger.error(f"LaTeX validation failed: {error_msg}")
+            raise HTTPException(
+                status_code=400,
+                detail=error_msg,
+            )
+        
+        return {"valid": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error in validate_latex_compile: {e}")
         raise HTTPException(
-            status_code=400,
-            detail=compile_result.error_message or "LaTeX compilation failed",
+            status_code=500,
+            detail=f"Internal error during validation: {str(e)}",
         )
-    
-    return {"valid": True}
 
 
 @router.post("/compile")
@@ -47,22 +58,33 @@ async def compile_latex_to_pdf(request: CompileRequest):
     This endpoint is useful for compiling LaTeX that may have been edited
     or when the job no longer exists in the backend.
     """
-    compile_result = compile_latex(request.latex)
-    
-    if not compile_result.success:
-        raise HTTPException(
-            status_code=400,
-            detail=compile_result.error_message or "LaTeX compilation failed",
+    try:
+        compile_result = compile_latex(request.latex)
+        
+        if not compile_result.success:
+            error_msg = compile_result.error_message or "LaTeX compilation failed"
+            logger.error(f"LaTeX compilation failed: {error_msg}")
+            raise HTTPException(
+                status_code=400,
+                detail=error_msg,
+            )
+        
+        # Return PDF as response
+        return Response(
+            content=compile_result.pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{request.filename}"',
+            },
         )
-    
-    # Return PDF as response
-    return Response(
-        content=compile_result.pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="{request.filename}"',
-        },
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error in compile_latex_to_pdf: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal error during compilation: {str(e)}",
+        )
 
 
 

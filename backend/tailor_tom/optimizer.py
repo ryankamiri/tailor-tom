@@ -1141,6 +1141,9 @@ class OptimizeATSKeywords(dspy.Signature):
     - ONLY edit the TEXT CONTENT within bullet points - identify bullet points by their structure (they may use \\item, \\resumeItem, or any custom command)
     - DO NOT modify ANY LaTeX commands, environments, or structure - ONLY the text words
     - DO NOT modify: \\begin{}, \\end{}, \\textbf{}, \\textit{}, \\section{}, \\item, \\resumeItem, or ANY commands
+    - CRITICAL: NEVER remove or modify \\end{} tags - they MUST remain exactly as-is (e.g., \\end{resume_subsection}, \\end{resume_section}, \\end{subitems})
+    - CRITICAL: NEVER uncomment commented sections - if a line starts with %, keep the % exactly as-is
+    - CRITICAL: NEVER remove blank lines between sections - preserve all whitespace and line breaks exactly
     - DO NOT modify: section environments, formatting commands, preamble, custom commands, or ANY LaTeX structure
     - DO NOT modify: Skills section LaTeX structure (nospacetabbing, \\=, \\\\, \\>, \\underline)
     - DO NOT modify: tabular environments, table structures, or ANY formatting
@@ -1201,8 +1204,11 @@ class OptimizeATSKeywords(dspy.Signature):
     
     FORMATTING - PRESERVE ALL LaTeX STRUCTURE EXACTLY:
     - Preserve ALL LaTeX structure EXACTLY: \\begin{}, \\end{}, \\textbf{}, \\item, \\resumeItem, or ANY commands
+    - CRITICAL: NEVER remove or modify \\end{} tags - they MUST remain exactly as-is (e.g., \\end{resume_subsection}, \\end{resume_section}, \\end{subitems})
+    - CRITICAL: NEVER uncomment commented sections - if a line starts with %, keep the % exactly as-is
+    - CRITICAL: NEVER remove blank lines between sections - preserve all whitespace and line breaks exactly
     - Keep ALL special characters: $|$ (pipe), \\& (ampersand), etc.
-    - DO NOT remove LaTeX comments (lines starting with %)
+    - DO NOT remove LaTeX comments (lines starting with %) - keep the % character exactly as-is
     - DO NOT remove whitespace or reformat LaTeX code
     - DO NOT simplify or "clean up" LaTeX structure
     - CRITICAL - COMMAND DEFINITIONS: DO NOT modify ANY command definitions in the preamble:
@@ -1289,8 +1295,11 @@ class CondenseLongBullets(dspy.Signature):
     
     FORMATTING - PRESERVE ALL LaTeX STRUCTURE EXACTLY:
     - Preserve ALL LaTeX structure EXACTLY: \\begin{}, \\end{}, \\textbf{}, \\item, \\resumeItem, or ANY commands
+    - CRITICAL: NEVER remove or modify \\end{} tags - they MUST remain exactly as-is (e.g., \\end{resume_subsection}, \\end{resume_section}, \\end{subitems})
+    - CRITICAL: NEVER uncomment commented sections - if a line starts with %, keep the % exactly as-is
+    - CRITICAL: NEVER remove blank lines between sections - preserve all whitespace and line breaks exactly
     - Keep ALL special characters: $|$ (pipe), \\& (ampersand), etc.
-    - DO NOT remove LaTeX comments (lines starting with %)
+    - DO NOT remove LaTeX comments (lines starting with %) - keep the % character exactly as-is
     - DO NOT remove whitespace or reformat LaTeX code
     - DO NOT simplify or "clean up" LaTeX structure
     - CRITICAL - COMMAND DEFINITIONS: DO NOT modify ANY command definitions in the preamble:
@@ -1392,14 +1401,25 @@ class ResumeOptimizerPipeline(dspy.Module):
             update_job_status(self.job_id, "processing")
         
         # Phase 1: ATS Keyword Optimization
+        phase1_start_memory = _get_memory_mb()
+        logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 1 start. Memory: {phase1_start_memory:.1f} MB")
+        
         try:
+            logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Calling LLM for Phase 1 ATS optimization...")
+            llm_call_start = _get_memory_mb()
+            
             ats_result = self.ats_optimizer(
                 resume_latex=resume_latex,
                 job_description=job_description,
                 target_pages=self.target_pages,
             )
             
+            llm_call_end = _get_memory_mb()
+            logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 1 LLM call completed. Memory: {llm_call_end:.1f} MB (delta: {llm_call_end - llm_call_start:.1f} MB)")
+            
             phase1_latex = _fix_latex_issues(ats_result.optimized_latex)
+            after_fix_memory = _get_memory_mb()
+            logger.error(f"[DEBUG] [ResumeOptimizerPipeline] After _fix_latex_issues. Memory: {after_fix_memory:.1f} MB")
             
         except Exception as e:
             error_type = type(e).__name__

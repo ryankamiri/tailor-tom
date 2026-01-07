@@ -18,6 +18,7 @@ async def get_job_status(job_id: str):
     
     job = get_job(job_id)
     if not job:
+        logger.error(f"Job not found: {job_id}")
         raise HTTPException(status_code=404, detail="Job not found")
     
     return JobStatusResponse(
@@ -37,10 +38,12 @@ async def get_job_latex(job_id: str):
     
     job = get_job(job_id)
     if not job:
+        logger.error(f"Job not found for LaTeX retrieval: {job_id}")
         raise HTTPException(status_code=404, detail="Job not found")
     
     # Allow both completed and failed jobs to return LaTeX (if available)
     if job["status"] not in ["completed", "failed"]:
+        logger.error(f"Job {job_id} status is {job['status']}, cannot retrieve LaTeX")
         raise HTTPException(
             status_code=400,
             detail=f"Job is not completed or failed (status: {job['status']})",
@@ -48,10 +51,12 @@ async def get_job_latex(job_id: str):
     
     result = job.get("result")
     if not result:
+        logger.error(f"Job {job_id} has no result data")
         raise HTTPException(status_code=500, detail="Job result not available")
     
     optimized_latex = result.get("optimized_latex")
     if not optimized_latex:
+        logger.error(f"Job {job_id} result has no optimized_latex field")
         raise HTTPException(status_code=500, detail="Optimized LaTeX not available for this job")
     
     return {
@@ -67,9 +72,11 @@ async def cancel_job(job_id: str):
     
     job = get_job(job_id)
     if not job:
+        logger.error(f"Job not found for cancellation: {job_id}")
         raise HTTPException(status_code=404, detail="Job not found")
     
     if job["status"] not in ["pending", "processing"]:
+        logger.error(f"Cannot cancel job {job_id} with status: {job['status']}")
         raise HTTPException(
             status_code=400,
             detail=f"Cannot cancel job with status: {job['status']}. Only pending or processing jobs can be cancelled.",
@@ -102,10 +109,11 @@ async def delete_job_endpoint(job_id: str):
     job = get_job(job_id)
     if not job:
         # Job doesn't exist - return success (idempotent operation)
-        # Don't log - this is expected behavior
+        # Don't log - this is expected behavior, not an error
         return {"job_id": job_id, "message": "Job deleted successfully"}
     
     if job["status"] in ["pending", "processing"]:
+        logger.error(f"Cannot delete job {job_id} with status: {job['status']}")
         raise HTTPException(
             status_code=400,
             detail=f"Cannot delete job with status: {job['status']}. Please cancel the job first.",

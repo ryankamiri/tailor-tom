@@ -33,6 +33,7 @@ async def create_optimization_job(
     # Validate LaTeX compiles (quick check)
     is_valid, error_message = validate_latex(request.resume_latex)
     if not is_valid:
+        logger.error(f"Invalid LaTeX in optimization request: {error_message}")
         raise HTTPException(
             status_code=400,
             detail=f"Invalid LaTeX: {error_message}",
@@ -40,6 +41,7 @@ async def create_optimization_job(
     
     # Validate job description
     if len(request.job_description.strip()) < 50:
+        logger.error(f"Job description too short: {len(request.job_description.strip())} characters")
         raise HTTPException(
             status_code=400,
             detail="Job description must be at least 50 characters",

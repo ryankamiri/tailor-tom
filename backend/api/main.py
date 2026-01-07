@@ -1,14 +1,19 @@
 """FastAPI application for TailorTom backend."""
 
 import logging
+import traceback
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from api.routes import optimize, jobs, diff, compile, settings, admin
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 
@@ -28,6 +33,40 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Log HTTP exceptions before returning them."""
+    # Don't log 404s for DELETE /api/jobs/{job_id} - it's idempotent and expected
+    if (exc.status_code == 404 and 
+        request.method == "DELETE" and 
+        request.url.path.startswith("/api/jobs/")):
+        # Expected behavior - job doesn't exist, deletion is idempotent
+        pass
+    else:
+        logger.error(
+            f"HTTPException: {exc.status_code} - {exc.detail} - "
+            f"Path: {request.url.path} - Method: {request.method}"
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Log all unhandled exceptions."""
+    logger.error(
+        f"Unhandled exception: {type(exc).__name__}: {str(exc)} - "
+        f"Path: {request.url.path} - Method: {request.method}"
+    )
+    logger.error(f"Traceback:\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}"},
+    )
 
 # CORS middleware
 # Allow requests from frontend domains
