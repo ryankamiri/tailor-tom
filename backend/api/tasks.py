@@ -1,16 +1,23 @@
 """Celery tasks for TailorTom optimization jobs."""
 
-import logging
 import gc
+import logging
+import os
+import sys
+import tracemalloc
 from datetime import datetime, timezone
+
 from billiard.exceptions import TimeLimitExceeded
 from celery.exceptions import SoftTimeLimitExceeded
 from celery.signals import worker_ready
+
+import psutil
+
 from api.celery_app import celery_app
-from api.storage import update_job_status, get_job, get_orphaned_processing_jobs
 from api.job_fields import JOB_REENQUEUE_REQUIRED_FIELDS, JOB_RESTART_COUNT_FIELD, JOB_LAST_RESTART_TIME_FIELD
-from tailor_tom.optimizer import optimize_resume, configure_dspy
+from api.storage import update_job_status, get_job, get_orphaned_processing_jobs
 from tailor_tom.config import settings
+from tailor_tom.optimizer import optimize_resume, configure_dspy
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)  # Only log errors for Celery tasks
@@ -258,6 +265,12 @@ def _on_task_failure(self, exc, task_id, args, kwargs, einfo):
         logger.error(f"[optimize_resume_task] Error in failure callback: {e}")
 
 
+def _get_memory_mb() -> float:
+    """Get current memory usage in MB."""
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024 / 1024
+
+
 @celery_app.task(bind=True, name="api.tasks.optimize_resume_task", on_failure=_on_task_failure)
 def optimize_resume_task(
     self,
@@ -286,6 +299,12 @@ def optimize_resume_task(
         last_name: User's last name for filename
         company_name: Company name for filename
     """
+    # Start memory tracking
+    tracemalloc.start()
+    initial_memory = _get_memory_mb()
+    logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} started. Initial memory: {initial_memory:.1f} MB")
+    logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} resume_latex size: {len(resume_latex)} bytes ({len(resume_latex)/1024:.1f} KB)")
+    
     try:
         # Check if job was cancelled
         job = get_job(job_id)
@@ -303,6 +322,9 @@ def optimize_resume_task(
         
         # Run optimization
         # Status will be updated to "processing" at the start of Phase 1 (actual work begins)
+        pre_optimize_memory = _get_memory_mb()
+        logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} before optimize_resume: {pre_optimize_memory:.1f} MB")
+        
         result = optimize_resume(
             resume_latex=resume_latex,
             job_description=job_description,
@@ -311,6 +333,9 @@ def optimize_resume_task(
             max_bullet_lines=max_bullet_lines,
             job_id=job_id,  # Pass job_id so optimizer can update status when work actually starts
         )
+        
+        post_optimize_memory = _get_memory_mb()
+        logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} after optimize_resume: {post_optimize_memory:.1f} MB (delta: {post_optimize_memory - pre_optimize_memory:.1f} MB)")
         
         if result.success:
             # Generate filename using provided company name (Title_Case format)
@@ -332,11 +357,16 @@ def optimize_resume_task(
             )
             
             # Explicit cleanup of large objects
+            before_cleanup_memory = _get_memory_mb()
             if hasattr(result, 'pdf_bytes') and result.pdf_bytes:
+                pdf_size_mb = len(result.pdf_bytes) / 1024 / 1024
+                logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} deleting PDF bytes: {pdf_size_mb:.1f} MB")
                 del result.pdf_bytes
             del resume_latex
             del job_description
             gc.collect()
+            after_cleanup_memory = _get_memory_mb()
+            logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} after cleanup: {after_cleanup_memory:.1f} MB (freed: {before_cleanup_memory - after_cleanup_memory:.1f} MB)")
         else:
             # Update job with error
             # Even if optimization failed, store optimized_latex if available (user can still view/use it)
@@ -390,6 +420,8 @@ def optimize_resume_task(
             )
             
             # Log minimal error to backend (full details will be logged in frontend)
+            final_memory = _get_memory_mb()
+            logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} failed. Final memory: {final_memory:.1f} MB (total: {final_memory - initial_memory:.1f} MB)")
             logger.error(f"[optimize_resume_task] Job {job_id} failed: {error_message}")
             
     except (TimeLimitExceeded, SoftTimeLimitExceeded) as e:
@@ -444,5 +476,12 @@ def optimize_resume_task(
         )
         
         # Re-raise to trigger Celery retry (for non-timeout exceptions)
+        final_memory = _get_memory_mb()
+        logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} exception. Final memory: {final_memory:.1f} MB (total: {final_memory - initial_memory:.1f} MB)")
+        tracemalloc.stop()
         raise
+    finally:
+        # Stop memory tracking
+        if tracemalloc.is_tracing():
+            tracemalloc.stop()
 

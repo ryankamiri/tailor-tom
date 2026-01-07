@@ -5,14 +5,18 @@ This module implements a two-phase optimization pipeline:
 2. Phase 2: Page reduction (condensing qualifying bullets, content removal allowed)
 """
 
-import dspy
-import re
 import gc
+import logging
+import os
+import re
+import sys
+import tracemalloc
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
-import logging
 
+import dspy
 import fitz  # PyMuPDF
+import psutil
 
 from tailor_tom.config import settings
 from tailor_tom.latex_compiler import compile_latex, CompileResult, validate_latex
@@ -20,6 +24,12 @@ from tailor_tom.layout_analyzer import analyze_layout, check_quality, QualityRes
 from api.storage import update_job_status
 
 logger = logging.getLogger(__name__)
+
+
+def _get_memory_mb() -> float:
+    """Get current memory usage in MB."""
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024 / 1024
 
 
 # =============================================================================
@@ -1439,6 +1449,12 @@ class ResumeOptimizerPipeline(dspy.Module):
         education_preserved = _validate_section_preservation(phase1_latex, resume_latex, "Education")
         
         phase1_compile = compile_latex(phase1_latex)
+        phase1_compile_memory = _get_memory_mb()
+        if phase1_compile.success and phase1_compile.pdf_bytes:
+            pdf_size_mb = len(phase1_compile.pdf_bytes) / 1024 / 1024
+            logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 1 compiled. Memory: {phase1_compile_memory:.1f} MB. PDF size: {pdf_size_mb:.1f} MB")
+        else:
+            logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 1 compile failed. Memory: {phase1_compile_memory:.1f} MB")
         
         if not phase1_compile.success:
             phase1_latex = _fix_latex_issues(phase1_latex)
@@ -1516,7 +1532,11 @@ class ResumeOptimizerPipeline(dspy.Module):
             bullets_data = bullet_metrics.get("bullets", [])
             
             # Calculate utilization for bullets (same logic as analyze_layout)
+            before_doc_memory = _get_memory_mb()
             doc = fitz.open(stream=current_compile.pdf_bytes, filetype="pdf")
+            after_doc_open_memory = _get_memory_mb()
+            logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 2 iteration {iteration + 1} opened PyMuPDF doc. Memory: {after_doc_open_memory:.1f} MB (delta: {after_doc_open_memory - before_doc_memory:.1f} MB)")
+            
             try:
                 if len(doc) > 0:
                     page = doc[0]
@@ -1565,13 +1585,22 @@ class ResumeOptimizerPipeline(dspy.Module):
                             bullet["last_line_utilization_percent"] = 100
             finally:
                 doc.close()
+                del doc  # Explicitly delete doc reference
+                after_doc_close_memory = _get_memory_mb()
+                logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 2 iteration {iteration + 1} closed PyMuPDF doc. Memory: {after_doc_close_memory:.1f} MB (freed: {after_doc_open_memory - after_doc_close_memory:.1f} MB)")
             
             # CRITICAL: Delete PDF bytes immediately after analysis
             # We only need the metrics, not the PDF bytes
             # Store page count before deleting PDF bytes
             current_pages = current_compile.page_count
+            before_delete_memory = _get_memory_mb()
+            if current_compile.pdf_bytes:
+                pdf_size_mb = len(current_compile.pdf_bytes) / 1024 / 1024
+                logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 2 iteration {iteration + 1} deleting PDF. Size: {pdf_size_mb:.1f} MB. Memory before: {before_delete_memory:.1f} MB")
             del current_compile.pdf_bytes
             gc.collect()
+            after_delete_memory = _get_memory_mb()
+            logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 2 iteration {iteration + 1} after PDF delete. Memory: {after_delete_memory:.1f} MB (freed: {before_delete_memory - after_delete_memory:.1f} MB)")
             
             # Filter qualifying bullets (includes long bullets and page reduction candidates)
             qualifying_bullets_list = _filter_qualifying_bullets(

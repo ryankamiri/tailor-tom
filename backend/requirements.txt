@@ -3,6 +3,7 @@ dspy>=3.0.0b4
 openai>=1.0
 PyPDF2>=3.0
 pymupdf>=1.24  # For PDF annotation and text extraction
+psutil>=5.9.0  # For memory usage tracking
 python-dotenv>=1.0
 pydantic>=2.0
 pydantic-settings>=2.0
