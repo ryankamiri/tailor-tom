@@ -8,10 +8,12 @@ import subprocess
 import tempfile
 import shutil
 import glob
+import re
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 from io import BytesIO
+from functools import lru_cache
 
 import fitz  # PyMuPDF
 from PyPDF2 import PdfReader
@@ -31,24 +33,28 @@ class CompileResult:
     layout_analysis: Optional[str] = None  # Formatted layout feedback for LLM
 
 
-def _find_pdflatex() -> Optional[str]:
-    """Find pdflatex executable on the system.
+def _find_tex_engine(engine: str = "xelatex") -> Optional[str]:
+    """Find LaTeX engine executable on the system.
     
     Checks PATH first, then common TeX installation locations.
+    Supports xelatex, lualatex, and pdflatex.
+    
+    Args:
+        engine: Engine name ('xelatex', 'lualatex', or 'pdflatex'). Defaults to 'xelatex'.
     
     Returns:
-        Path to pdflatex executable, or None if not found.
+        Path to engine executable, or None if not found.
     """
     # Check PATH first
-    pdflatex_path = shutil.which("pdflatex")
-    if pdflatex_path:
-        return pdflatex_path
+    engine_path = shutil.which(engine)
+    if engine_path:
+        return engine_path
     
     # Check common macOS TeX paths
     common_paths = [
-        "/Library/TeX/texbin/pdflatex",
-        "/usr/local/texlive/*/bin/*/pdflatex",
-        "/usr/texbin/pdflatex",
+        f"/Library/TeX/texbin/{engine}",
+        f"/usr/local/texlive/*/bin/*/{engine}",
+        f"/usr/texbin/{engine}",
     ]
     
     for path_pattern in common_paths:
@@ -65,9 +71,70 @@ def _find_pdflatex() -> Optional[str]:
     return None
 
 
+# Packages and commands that require XeTeX or LuaTeX (not pdfTeX)
+# Based on research: fontspec, polyglossia, unicode-math, and direct fontspec commands
+_XETEX_REQUIRED_PACKAGES = {
+    'fontspec', 'polyglossia', 'unicode-math', 'xunicode', 
+    'xeCJK', 'xePersian', 'bidi'
+}
+
+# Direct fontspec commands that indicate XeTeX/LuaTeX requirement
+_XETEX_COMMAND_PATTERNS = [
+    r'\\setmainfont\s*\{',
+    r'\\setsansfont\s*\{',
+    r'\\setmonofont\s*\{',
+    r'\\newfontfamily\s*\{',
+    r'\\fontspec\s*\{',
+    r'\\addfontfeatures\s*\{',
+]
+
+# Compiled regex for package detection (more efficient)
+_PACKAGE_PATTERN = re.compile(
+    r'\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}',
+    re.IGNORECASE
+)
+
+# Compiled regexes for command detection
+_COMMAND_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in _XETEX_COMMAND_PATTERNS]
+
+
+@lru_cache(maxsize=128)
+def _detect_required_engine(content: str) -> str:
+    """Detect which LaTeX engine is required based on document content.
+    
+    Uses efficient regex-based detection to check for:
+    - Packages that require XeTeX/LuaTeX (fontspec, polyglossia, unicode-math, etc.)
+    - Direct fontspec commands (\setmainfont, \setsansfont, etc.)
+    
+    Args:
+        content: LaTeX document content.
+    
+    Returns:
+        Engine name: 'xelatex' if XeTeX/LuaTeX features are detected, 'pdflatex' otherwise.
+    """
+    # Fast check: Look for packages that require XeTeX/LuaTeX
+    # Use regex to find all \usepackage declarations in a single pass
+    for match in _PACKAGE_PATTERN.finditer(content):
+        package_name = match.group(1).strip()
+        # Handle comma-separated packages: \usepackage{package1,package2}
+        for pkg in package_name.split(','):
+            pkg = pkg.strip()
+            if pkg in _XETEX_REQUIRED_PACKAGES:
+                return "xelatex"
+    
+    # Check for direct fontspec commands (more specific check)
+    for pattern in _COMMAND_PATTERNS:
+        if pattern.search(content):
+            return "xelatex"
+    
+    # Default to xelatex for better compatibility with modern packages
+    # This ensures fontspec and other modern packages work out of the box
+    return "xelatex"
+
+
 def _check_pdflatex_available() -> bool:
     """Check if pdflatex is available on the system."""
-    return _find_pdflatex() is not None
+    return _find_tex_engine("pdflatex") is not None
 
 
 def compile_latex(
@@ -83,15 +150,24 @@ def compile_latex(
     Returns:
         CompileResult containing PDF bytes, page count, and any errors.
     """
-    pdflatex_path = _find_pdflatex()
-    if not pdflatex_path:
+    # Detect which engine is needed (xelatex for fontspec, etc.)
+    engine = _detect_required_engine(content)
+    engine_path = _find_tex_engine(engine)
+    
+    # Fallback to pdflatex if xelatex not found
+    if not engine_path and engine == "xelatex":
+        engine = "pdflatex"
+        engine_path = _find_tex_engine(engine)
+    
+    if not engine_path:
         return CompileResult(
             success=False,
             error_message=(
-                "pdflatex not found in PATH. "
+                f"{engine} not found in PATH. "
                 "Install TeX Live: brew install --cask basictex\n"
                 "Then add to PATH: export PATH=\"/Library/TeX/texbin:$PATH\"\n"
-                "Or restart your terminal (BasicTeX installer usually does this automatically)."
+                "Or restart your terminal (BasicTeX installer usually does this automatically).\n"
+                f"Note: This document requires {engine} (possibly due to fontspec package)."
             ),
         )
 
@@ -107,11 +183,11 @@ def compile_latex(
         tex_path.write_text(content, encoding="utf-8")
 
         try:
-            # Run pdflatex twice to resolve references
+            # Run LaTeX engine twice to resolve references
             for _ in range(2):
                 result = subprocess.run(
                     [
-                        pdflatex_path,
+                        engine_path,
                         "-interaction=nonstopmode",
                         "-halt-on-error",
                         "-output-directory",

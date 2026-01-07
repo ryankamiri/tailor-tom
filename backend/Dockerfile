@@ -1,8 +1,8 @@
 FROM python:3.10-slim
 
-# Install pdflatex and required LaTeX packages
+# Install LaTeX engines (xelatex, lualatex, pdflatex) and required packages
 # Using texlive-full for maximum compatibility (~5GB)
-# For smaller size, use: texlive-latex-base texlive-latex-extra texlive-fonts-recommended texlive-latex-recommended (~500MB)
+# For smaller size, use: texlive-latex-base texlive-latex-extra texlive-fonts-recommended texlive-latex-recommended texlive-xetex (~500MB)
 RUN apt-get update && apt-get install -y \
     texlive-full \
     && rm -rf /var/lib/apt/lists/*

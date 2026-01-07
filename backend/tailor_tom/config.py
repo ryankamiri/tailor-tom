@@ -67,7 +67,7 @@ class Settings(BaseSettings):
         default=30,
         ge=5,
         le=120,
-        description="Timeout in seconds for pdflatex compilation",
+        description="Timeout in seconds for LaTeX compilation (xelatex/lualatex/pdflatex)",
     )
 
     # Redis Configuration
