@@ -8,6 +8,12 @@ from typing import Optional, Dict, Any, Tuple
 from threading import Lock
 import redis
 from tailor_tom.config import settings
+from api.job_fields import (
+    JOB_REQUIRED_FIELDS,
+    JOB_OPTIONAL_STRING_FIELDS,
+    JOB_RESTART_COUNT_FIELD,
+    JOB_LAST_RESTART_TIME_FIELD,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)  # Only log errors
@@ -62,6 +68,8 @@ def create_job(job_id: str, job_data: Dict[str, Any]) -> None:
             - company_name: string
             - target_pages: int
             - max_iterations: int
+            - restart_count: string (default: "0") - number of times job was re-enqueued
+            - last_restart_time: string (default: "") - ISO timestamp of last re-enqueue
     """
     client = get_redis_client()
     key = _get_job_key(job_id)
@@ -77,6 +85,12 @@ def create_job(job_id: str, job_data: Dict[str, Any]) -> None:
         else:
             job_data_copy[field] = str(value)
     
+    # Initialize restart tracking fields if not present
+    if JOB_RESTART_COUNT_FIELD not in job_data_copy:
+        job_data_copy[JOB_RESTART_COUNT_FIELD] = "0"
+    if JOB_LAST_RESTART_TIME_FIELD not in job_data_copy:
+        job_data_copy[JOB_LAST_RESTART_TIME_FIELD] = ""
+    
     # Set TTL (7 days default)
     ttl_seconds = settings.redis_ttl_days * 24 * 60 * 60
     
@@ -85,9 +99,8 @@ def create_job(job_id: str, job_data: Dict[str, Any]) -> None:
     client.expire(key, ttl_seconds)
     
     # Verify critical fields were stored (for debugging)
-    required_fields = ["job_description", "max_bullet_lines", "first_name", "last_name", "original_latex"]
     stored_data = client.hgetall(key)
-    missing_stored = [f for f in required_fields if f not in stored_data or stored_data.get(f) == ""]
+    missing_stored = [f for f in JOB_REQUIRED_FIELDS if f not in stored_data or stored_data.get(f) == ""]
     if missing_stored:
         logger.error(
             f"[create_job] CRITICAL: Job {job_id} created but required fields missing from Redis: {missing_stored}. "
@@ -132,10 +145,15 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     # Convert empty strings back to None (we stored None as "" in create_job)
     # Handle all optional fields that could be None
     # Note: job_description, first_name, last_name are required and should not be None
-    optional_string_fields = ["result", "completed_at", "error_message"]
-    for field in optional_string_fields:
+    for field in JOB_OPTIONAL_STRING_FIELDS:
         if job_data.get(field) == "":
             job_data[field] = None
+    
+    # Initialize restart tracking fields if missing
+    if JOB_RESTART_COUNT_FIELD not in job_data or job_data.get(JOB_RESTART_COUNT_FIELD) == "":
+        job_data[JOB_RESTART_COUNT_FIELD] = "0"
+    if JOB_LAST_RESTART_TIME_FIELD not in job_data:
+        job_data[JOB_LAST_RESTART_TIME_FIELD] = ""
     
     # Convert result JSON string back to dict (if it exists and is not None)
     if job_data.get("result"):
@@ -214,6 +232,13 @@ def update_job_status(
             client.hset(key, field, json.dumps(value))
         else:
             client.hset(key, field, str(value))
+    
+    # Ensure restart tracking fields exist (initialize if not present)
+    existing_fields = client.hgetall(key)
+    if JOB_RESTART_COUNT_FIELD not in existing_fields:
+        client.hset(key, JOB_RESTART_COUNT_FIELD, "0")
+    if JOB_LAST_RESTART_TIME_FIELD not in existing_fields:
+        client.hset(key, JOB_LAST_RESTART_TIME_FIELD, "")
     
     # Invalidate cache for this job
     with _cache_lock:

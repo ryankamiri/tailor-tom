@@ -1,12 +1,14 @@
 """Celery tasks for TailorTom optimization jobs."""
 
 import logging
+import gc
 from datetime import datetime, timezone
 from billiard.exceptions import TimeLimitExceeded
 from celery.exceptions import SoftTimeLimitExceeded
 from celery.signals import worker_ready
 from api.celery_app import celery_app
 from api.storage import update_job_status, get_job, get_orphaned_processing_jobs
+from api.job_fields import JOB_REENQUEUE_REQUIRED_FIELDS, JOB_RESTART_COUNT_FIELD, JOB_LAST_RESTART_TIME_FIELD
 from tailor_tom.optimizer import optimize_resume, configure_dspy
 from tailor_tom.config import settings
 
@@ -44,17 +46,59 @@ def configure_worker(sender, **kwargs):
             if not job_id:
                 continue
             
+            # Check restart count - fail after 3 attempts
+            restart_count = int(job_data.get(JOB_RESTART_COUNT_FIELD, "0"))
+            last_restart_time = job_data.get(JOB_LAST_RESTART_TIME_FIELD, "")
+            
+            if restart_count >= 3:
+                logger.error(
+                    f"[worker_ready] Job {job_id} has been restarted {restart_count} times. "
+                    f"Marking as failed to prevent infinite loop."
+                )
+                update_job_status(
+                    job_id,
+                    "failed",
+                    completed_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                    error_message=(
+                        "Job failed after multiple worker restarts. "
+                        "This may indicate a memory issue or job complexity exceeding system limits. "
+                        "Please try again with a simpler resume or contact support."
+                    ),
+                    result={
+                        "optimized_latex": "",
+                        "filename": "resume.pdf",
+                        "error_details": {
+                            "iterations": 0,
+                            "optimized_latex_available": False,
+                            "original_latex_length": 0,
+                            "optimized_latex_length": 0,
+                        }
+                    },
+                )
+                continue
+            
+            # Check cooldown period (5 minutes)
+            if last_restart_time:
+                try:
+                    last_restart_dt = datetime.fromisoformat(last_restart_time.replace('Z', '+00:00'))
+                    time_since_restart = (datetime.now(timezone.utc) - last_restart_dt).total_seconds()
+                    if time_since_restart < 300:  # 5 minutes
+                        logger.error(
+                            f"[worker_ready] Job {job_id} was restarted {time_since_restart:.0f}s ago. "
+                            f"Skipping re-enqueue (cooldown period)."
+                        )
+                        continue
+                except (ValueError, AttributeError):
+                    # Invalid timestamp, proceed with re-enqueue
+                    pass
+            
             # Check if we have all required fields to re-enqueue
             # Note: company_name is optional (can be None or empty string)
-            required_fields = [
-                "original_latex", "job_description", "target_pages",
-                "max_bullet_lines", "first_name", "last_name"
-            ]
             # Check for missing required fields (None, empty string, or not present)
             # For string fields, check if they're None or empty string
             # For numeric fields, check if they're None (0 is a valid value)
             missing_fields = []
-            for field in required_fields:
+            for field in JOB_REENQUEUE_REQUIRED_FIELDS:
                 value = job_data.get(field)
                 if value is None:
                     missing_fields.append(field)
@@ -98,12 +142,15 @@ def configure_worker(sender, **kwargs):
                             "optimized_latex_available": False,
                             "original_latex_length": 0,
                             "optimized_latex_length": 0,
-                        }
-                    },
-                )
+                    }
+                },
+            )
                 continue
             
             try:
+                # Increment restart counter
+                new_restart_count = restart_count + 1
+                
                 # Re-enqueue the task with all stored parameters
                 optimize_resume_task.apply_async(
                     args=[],
@@ -121,8 +168,15 @@ def configure_worker(sender, **kwargs):
                     queue=queue_name,
                 )
                 
-                # Reset status to pending (task will set it to processing when it starts)
-                update_job_status(job_id, "pending")
+                # Reset status to pending and update restart tracking
+                update_job_status(
+                    job_id,
+                    "pending",
+                    **{
+                        JOB_RESTART_COUNT_FIELD: str(new_restart_count),
+                        JOB_LAST_RESTART_TIME_FIELD: datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                    },
+                )
                 re_enqueued += 1
                 
             except Exception as e:
@@ -276,6 +330,13 @@ def optimize_resume_task(
                 },
                 company_name=company_name,
             )
+            
+            # Explicit cleanup of large objects
+            if hasattr(result, 'pdf_bytes') and result.pdf_bytes:
+                del result.pdf_bytes
+            del resume_latex
+            del job_description
+            gc.collect()
         else:
             # Update job with error
             # Even if optimization failed, store optimized_latex if available (user can still view/use it)

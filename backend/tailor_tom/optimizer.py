@@ -7,6 +7,7 @@ This module implements a two-phase optimization pipeline:
 
 import dspy
 import re
+import gc
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
 import logging
@@ -1465,11 +1466,15 @@ class ResumeOptimizerPipeline(dspy.Module):
         # Run Phase 2 if: (1) over target pages OR (2) has quality issues (e.g., long bullets)
         if phase1_compile.page_count <= self.target_pages and phase1_quality.passes:
             # Already at target pages and no quality issues - return early
+            # Keep PDF bytes for result, but delete from compile result
+            pdf_bytes = phase1_compile.pdf_bytes
+            del phase1_compile.pdf_bytes
+            gc.collect()
             return OptimizationResult(
                 success=True,
                 original_latex=resume_latex,
                 optimized_latex=phase1_latex,
-                pdf_bytes=phase1_compile.pdf_bytes,
+                pdf_bytes=pdf_bytes,
                 page_count=phase1_quality.page_count,
                 iterations=1,
                 error_message=None,
@@ -1477,15 +1482,31 @@ class ResumeOptimizerPipeline(dspy.Module):
             )
 
         # Phase 2: Bullet Condensation
+        # Delete Phase 1 PDF bytes - we only need LaTeX (text) for Phase 2
+        del phase1_compile.pdf_bytes
+        gc.collect()
+        
         current_latex = phase1_latex
-        current_compile = phase1_compile
+        current_compile = phase1_compile  # This no longer has pdf_bytes
         last_valid_latex = phase1_latex
-        last_valid_pdf = phase1_compile.pdf_bytes
+        # DO NOT store: last_valid_pdf = phase1_compile.pdf_bytes
         last_quality_result = phase1_quality
 
         # Phase 2: Bullet Condensation
         phase2_iterations_completed = 0
         for iteration in range(self.max_iterations):
+            # Compile current LaTeX to get PDF for analysis
+            # Note: On first iteration, current_compile may not have pdf_bytes (deleted after Phase 1)
+            if not hasattr(current_compile, 'pdf_bytes') or current_compile.pdf_bytes is None:
+                current_compile = compile_latex(current_latex)
+                if not current_compile.success:
+                    current_latex = _fix_latex_issues(current_latex)
+                    current_compile = compile_latex(current_latex)
+                    if not current_compile.success:
+                        logger.error(f"[Phase 2] Iteration {iteration + 1}: Compilation failed, reverting to last valid")
+                        current_latex = last_valid_latex
+                        continue
+            
             # Get layout analysis
             current_pages = current_compile.page_count
             
@@ -1544,6 +1565,13 @@ class ResumeOptimizerPipeline(dspy.Module):
                             bullet["last_line_utilization_percent"] = 100
             finally:
                 doc.close()
+            
+            # CRITICAL: Delete PDF bytes immediately after analysis
+            # We only need the metrics, not the PDF bytes
+            # Store page count before deleting PDF bytes
+            current_pages = current_compile.page_count
+            del current_compile.pdf_bytes
+            gc.collect()
             
             # Filter qualifying bullets (includes long bullets and page reduction candidates)
             qualifying_bullets_list = _filter_qualifying_bullets(
@@ -1615,21 +1643,30 @@ class ResumeOptimizerPipeline(dspy.Module):
             )
             
             if quality_result.passes:
+                # Keep PDF bytes for result
+                pdf_bytes = current_compile.pdf_bytes
+                del current_compile.pdf_bytes
+                gc.collect()
                 return OptimizationResult(
                     success=True,
                     original_latex=resume_latex,
                     optimized_latex=current_latex,
-                    pdf_bytes=current_compile.pdf_bytes,
+                    pdf_bytes=pdf_bytes,
                     page_count=quality_result.page_count,
                     iterations=iteration + 2,  # Phase 1 (1) + Phase 2 iterations
                     filename=None,
                 )
             
-            # Store as last valid
+            # Store as last valid - ONLY LaTeX, NO PDF bytes!
+            # If rollback needed, we can recompile from LaTeX
             last_valid_latex = current_latex
-            last_valid_pdf = current_compile.pdf_bytes
+            # DO NOT store: last_valid_pdf = current_compile.pdf_bytes
             last_quality_result = quality_result
             phase2_iterations_completed = iteration + 1
+            
+            # Delete current PDF bytes before next iteration
+            del current_compile.pdf_bytes
+            gc.collect()
 
         # Completed all iterations, performing final compile and quality check
         final_compile = compile_latex(current_latex)
@@ -1642,11 +1679,21 @@ class ResumeOptimizerPipeline(dspy.Module):
                 latex=current_latex,
             )
             
+            # Keep final PDF bytes for result
+            final_pdf_bytes = final_compile.pdf_bytes
+            del final_compile.pdf_bytes
+            
+            # Clean up any remaining references
+            if hasattr(current_compile, 'pdf_bytes'):
+                del current_compile.pdf_bytes
+            
+            gc.collect()
+            
             return OptimizationResult(
                 success=final_quality.passes,
                 original_latex=resume_latex,
                 optimized_latex=current_latex,
-                pdf_bytes=final_compile.pdf_bytes,
+                pdf_bytes=final_pdf_bytes,
                 page_count=final_quality.page_count,
                 iterations=self.max_iterations + 1,  # Phase 1 (1) + Phase 2 max iterations
                 error_message=(
@@ -1656,17 +1703,35 @@ class ResumeOptimizerPipeline(dspy.Module):
                 filename=None,
             )
         else:
-            # Return last valid version
-            return OptimizationResult(
-                success=False,
-                original_latex=resume_latex,
-                optimized_latex=last_valid_latex,
-                pdf_bytes=last_valid_pdf,
-                page_count=last_quality_result.page_count if last_quality_result else 0,
-                iterations=self.max_iterations + 1,
-                error_message=f"Final compilation failed: {final_compile.error_message}",
-                filename=None,
-            )
+            # Return last valid version - recompile from LaTeX (no PDF bytes stored)
+            # Recompile last valid LaTeX to get PDF bytes for result
+            last_valid_compile = compile_latex(last_valid_latex)
+            if last_valid_compile.success:
+                return OptimizationResult(
+                    success=False,
+                    original_latex=resume_latex,
+                    optimized_latex=last_valid_latex,
+                    pdf_bytes=last_valid_compile.pdf_bytes,  # Recompiled, not stored
+                    page_count=last_quality_result.page_count if last_quality_result else 0,
+                    iterations=self.max_iterations + 1,
+                    error_message=f"Final compilation failed: {final_compile.error_message}",
+                    filename=None,
+                )
+            else:
+                # Fallback: return without PDF bytes if recompilation fails
+                return OptimizationResult(
+                    success=False,
+                    original_latex=resume_latex,
+                    optimized_latex=last_valid_latex,
+                    pdf_bytes=None,  # Could not recompile
+                    page_count=last_quality_result.page_count if last_quality_result else 0,
+                    iterations=self.max_iterations + 1,
+                    error_message=(
+                        f"Final compilation failed: {final_compile.error_message}. "
+                        f"Recompilation of last valid version also failed: {last_valid_compile.error_message}"
+                    ),
+                    filename=None,
+                )
 
 
 def configure_dspy(
