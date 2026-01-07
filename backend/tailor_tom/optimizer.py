@@ -32,6 +32,40 @@ def _get_memory_mb() -> float:
     return process.memory_info().rss / 1024 / 1024
 
 
+def _log_memory_snapshot(label: str, job_id: Optional[str] = None, threshold_mb: float = 400.0) -> None:
+    """Log detailed memory snapshot with tracemalloc statistics.
+    
+    Args:
+        label: Label for this memory snapshot (e.g., "after LLM call")
+        job_id: Optional job ID for logging context
+        threshold_mb: Memory threshold in MB to trigger warnings (default: 400MB)
+    """
+    current_memory = _get_memory_mb()
+    
+    # Log basic memory info
+    job_prefix = f"Job {job_id} " if job_id else ""
+    logger.error(f"[MEMORY] [{label}] {job_prefix}{current_memory:.1f} MB")
+    
+    # Check threshold
+    if current_memory > threshold_mb:
+        logger.error(f"[MEMORY] [WARNING] {job_prefix}memory ({current_memory:.1f} MB) exceeds threshold ({threshold_mb:.1f} MB) at {label}")
+    
+    # Get tracemalloc statistics if available
+    if tracemalloc.is_tracing():
+        snapshot = tracemalloc.take_snapshot()
+        top_stats = snapshot.statistics('lineno')
+        
+        # Log top 10 memory allocations
+        logger.error(f"[MEMORY] [TRACEMALLOC] [{label}] {job_prefix}Top 10 allocations:")
+        for index, stat in enumerate(top_stats[:10], 1):
+            traceback_line = stat.traceback.format()[-1] if stat.traceback else "unknown"
+            logger.error(f"[MEMORY] [TRACEMALLOC] #{index}: {traceback_line}: {stat.size / 1024 / 1024:.2f} MB ({stat.count} blocks)")
+        
+        # Get current vs peak memory
+        current, peak = tracemalloc.get_traced_memory()
+        logger.error(f"[MEMORY] [TRACEMALLOC] [{label}] {job_prefix}Traced: {current / 1024 / 1024:.2f} MB current, {peak / 1024 / 1024:.2f} MB peak")
+
+
 # =============================================================================
 # Helper Functions
 # =============================================================================
@@ -1404,6 +1438,7 @@ class ResumeOptimizerPipeline(dspy.Module):
         # Phase 1: ATS Keyword Optimization
         phase1_start_memory = _get_memory_mb()
         logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 1 start. Memory: {phase1_start_memory:.1f} MB")
+        _log_memory_snapshot("phase1_start", self.job_id)
         
         try:
             logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Calling LLM for Phase 1 ATS optimization...")
@@ -1417,10 +1452,15 @@ class ResumeOptimizerPipeline(dspy.Module):
             
             llm_call_end = _get_memory_mb()
             logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 1 LLM call completed. Memory: {llm_call_end:.1f} MB (delta: {llm_call_end - llm_call_start:.1f} MB)")
+            _log_memory_snapshot("phase1_after_llm", self.job_id)
             
             phase1_latex = _fix_latex_issues(ats_result.optimized_latex)
             after_fix_memory = _get_memory_mb()
             logger.error(f"[DEBUG] [ResumeOptimizerPipeline] After _fix_latex_issues. Memory: {after_fix_memory:.1f} MB")
+            
+            # Cleanup LLM result object
+            del ats_result
+            gc.collect()
             
         except Exception as e:
             error_type = type(e).__name__
@@ -1474,6 +1514,7 @@ class ResumeOptimizerPipeline(dspy.Module):
         if phase1_compile.success and phase1_compile.pdf_bytes:
             pdf_size_mb = len(phase1_compile.pdf_bytes) / 1024 / 1024
             logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 1 compiled. Memory: {phase1_compile_memory:.1f} MB. PDF size: {pdf_size_mb:.1f} MB")
+            _log_memory_snapshot("phase1_after_compile", self.job_id)
         else:
             logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 1 compile failed. Memory: {phase1_compile_memory:.1f} MB")
         
