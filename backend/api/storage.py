@@ -249,51 +249,18 @@ def get_orphaned_processing_jobs() -> list[Dict[str, Any]]:
     while True:
         cursor, keys = client.scan(cursor, match=pattern, count=100)
         for key in keys:
-            # Get job data
-            job_data = client.hgetall(key)
+            # Extract job_id from key (format: "job:{job_id}")
+            job_id = key[4:]  # Remove "job:" prefix
+            
+            # Use get_job() to ensure consistent parsing of all fields
+            # This handles all field conversions, caching, and proper extraction
+            job_data = get_job(job_id)
             if not job_data:
                 continue
             
             # Check if status is "processing"
             if job_data.get("status") == "processing":
-                # Extract job_id from key (format: "job:{job_id}")
-                job_id = key[4:]  # Remove "job:" prefix
-                
-                # Parse job data (similar to get_job)
-                # Convert empty strings to None
-                optional_string_fields = ["result", "completed_at", "error_message"]
-                for field in optional_string_fields:
-                    if job_data.get(field) == "":
-                        job_data[field] = None
-                
-                # Convert result JSON if present
-                if job_data.get("result"):
-                    try:
-                        job_data["result"] = json.loads(job_data["result"])
-                    except json.JSONDecodeError:
-                        job_data["result"] = None
-                
-                # Convert numeric fields
-                if job_data.get("target_pages"):
-                    try:
-                        job_data["target_pages"] = int(job_data["target_pages"])
-                    except (ValueError, TypeError):
-                        job_data["target_pages"] = 1
-                
-                if job_data.get("max_iterations"):
-                    try:
-                        max_iter = int(job_data["max_iterations"])
-                        job_data["max_iterations"] = max_iter if max_iter > 0 else None
-                    except (ValueError, TypeError):
-                        job_data["max_iterations"] = None
-                
-                if job_data.get("max_bullet_lines"):
-                    try:
-                        job_data["max_bullet_lines"] = int(job_data["max_bullet_lines"])
-                    except (ValueError, TypeError):
-                        job_data["max_bullet_lines"] = 2  # Default
-                
-                # Add job_id to the dict
+                # Ensure job_id is in the dict (get_job doesn't add it)
                 job_data["job_id"] = job_id
                 orphaned_jobs.append(job_data)
         

@@ -1,6 +1,7 @@
 """Admin endpoints for viewing and managing saved resumes."""
 
 import logging
+import re
 import secrets
 from fastapi import APIRouter, HTTPException, Depends, Query, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -94,6 +95,17 @@ async def get_resume_detail(
     resume = get_resume(resume_id)
     if not resume:
         raise HTTPException(status_code=404, detail="Resume not found")
+    
+    # Ensure filename is always present - generate if missing
+    if not resume.get("filename") or resume.get("filename") == "":
+        # Generate filename from resume data
+        first_name = resume.get("first_name", "Unknown")
+        last_name = resume.get("last_name", "Unknown")
+        user_id = resume.get("user_id", resume_id[:8])
+        safe_first = re.sub(r'[^\w]', '', first_name).title() if first_name else "Unknown"
+        safe_last = re.sub(r'[^\w]', '', last_name).title() if last_name else "Unknown"
+        user_id_short = user_id.replace('-', '')[:8] if user_id else resume_id[:8]
+        resume["filename"] = f"{safe_first}_{safe_last}_{user_id_short}_resume.pdf"
     
     return resume
 

@@ -45,11 +45,35 @@ def configure_worker(sender, **kwargs):
                 continue
             
             # Check if we have all required fields to re-enqueue
+            # Note: company_name is optional (can be None or empty string)
             required_fields = [
                 "original_latex", "job_description", "target_pages",
-                "max_bullet_lines", "first_name", "last_name", "company_name"
+                "max_bullet_lines", "first_name", "last_name"
             ]
-            missing_fields = [f for f in required_fields if not job_data.get(f)]
+            # Check for missing required fields (None, empty string, or not present)
+            # For string fields, check if they're None or empty string
+            missing_fields = []
+            for field in required_fields:
+                value = job_data.get(field)
+                if not value or (isinstance(value, str) and value.strip() == ""):
+                    missing_fields.append(field)
+            
+            if missing_fields:
+                # Log the actual values to help debug
+                logger.error(
+                    f"[worker_ready] Job {job_id} missing required fields {missing_fields}. "
+                    f"Available fields: {list(job_data.keys())}. "
+                    f"Field values: original_latex={bool(job_data.get('original_latex'))}, "
+                    f"job_description={bool(job_data.get('job_description'))}, "
+                    f"target_pages={job_data.get('target_pages')}, "
+                    f"max_bullet_lines={job_data.get('max_bullet_lines')}, "
+                    f"first_name={bool(job_data.get('first_name'))}, "
+                    f"last_name={bool(job_data.get('last_name'))}, "
+                    f"company_name={bool(job_data.get('company_name'))}"
+                )
+            
+            # company_name is optional, but if present it should be a string (can be empty)
+            # We'll pass None if it's missing or empty
             
             if missing_fields:
                 logger.error(
@@ -88,7 +112,7 @@ def configure_worker(sender, **kwargs):
                         'max_bullet_lines': job_data["max_bullet_lines"],
                         'first_name': job_data["first_name"],
                         'last_name': job_data["last_name"],
-                        'company_name': job_data["company_name"],
+                        'company_name': job_data.get("company_name") or None,  # Optional field
                     },
                     queue=queue_name,
                 )

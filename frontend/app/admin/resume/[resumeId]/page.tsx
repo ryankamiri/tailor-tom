@@ -206,13 +206,25 @@ export default function ResumeDetailPage() {
       const blob = await downloadResume(resume.resume_id, format, password);
       updateAdminSessionTimestamp(); // Update timestamp on action
       
+      // Extract filename from Content-Disposition header or use resume filename
+      let downloadFilename = format === 'pdf' 
+        ? resume.filename 
+        : resume.filename.replace('.pdf', '.tex');
+      
+      // Fallback: if filename is missing or just "resume", generate from resume data
+      if (!downloadFilename || downloadFilename === 'resume.pdf' || downloadFilename === 'resume.tex') {
+        const safeFirst = resume.first_name?.replace(/[^\w]/g, '').replace(/\b\w/g, l => l.toUpperCase()) || 'Unknown';
+        const safeLast = resume.last_name?.replace(/[^\w]/g, '').replace(/\b\w/g, l => l.toUpperCase()) || 'Unknown';
+        downloadFilename = format === 'pdf'
+          ? `${safeFirst}_${safeLast}_resume.pdf`
+          : `${safeFirst}_${safeLast}_resume.tex`;
+      }
+      
       // Create download link
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = format === 'pdf' 
-        ? resume.filename 
-        : resume.filename.replace('.pdf', '.tex');
+      a.download = downloadFilename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
