@@ -252,13 +252,23 @@ def get_orphaned_processing_jobs() -> list[Dict[str, Any]]:
             # Extract job_id from key (format: "job:{job_id}")
             job_id = key[4:]  # Remove "job:" prefix
             
-            # Use get_job() to ensure consistent parsing of all fields
-            # This handles all field conversions, caching, and proper extraction
+            # First check status directly from Redis (bypass cache)
+            # This ensures we get the actual current status
+            raw_status = client.hget(key, "status")
+            if raw_status != "processing":
+                continue
+            
+            # Now use get_job() to get full job data with proper parsing
+            # Clear cache first to ensure fresh data
+            with _cache_lock:
+                if job_id in _job_cache:
+                    del _job_cache[job_id]
+            
             job_data = get_job(job_id)
             if not job_data:
                 continue
             
-            # Check if status is "processing"
+            # Double-check status (should be "processing" but verify)
             if job_data.get("status") == "processing":
                 # Ensure job_id is in the dict (get_job doesn't add it)
                 job_data["job_id"] = job_id

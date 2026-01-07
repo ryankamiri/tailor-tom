@@ -52,24 +52,27 @@ def configure_worker(sender, **kwargs):
             ]
             # Check for missing required fields (None, empty string, or not present)
             # For string fields, check if they're None or empty string
+            # For numeric fields, check if they're None (0 is a valid value)
             missing_fields = []
             for field in required_fields:
                 value = job_data.get(field)
-                if not value or (isinstance(value, str) and value.strip() == ""):
+                if value is None:
+                    missing_fields.append(field)
+                elif isinstance(value, str) and value.strip() == "":
+                    missing_fields.append(field)
+                elif field == "max_bullet_lines" and (not isinstance(value, int) or value <= 0):
+                    # max_bullet_lines must be a positive integer
+                    missing_fields.append(field)
+                elif field == "target_pages" and (not isinstance(value, int) or value <= 0):
+                    # target_pages must be a positive integer
                     missing_fields.append(field)
             
             if missing_fields:
-                # Log the actual values to help debug
+                # Log the actual values to help debug - show full job data
                 logger.error(
                     f"[worker_ready] Job {job_id} missing required fields {missing_fields}. "
                     f"Available fields: {list(job_data.keys())}. "
-                    f"Field values: original_latex={bool(job_data.get('original_latex'))}, "
-                    f"job_description={bool(job_data.get('job_description'))}, "
-                    f"target_pages={job_data.get('target_pages')}, "
-                    f"max_bullet_lines={job_data.get('max_bullet_lines')}, "
-                    f"first_name={bool(job_data.get('first_name'))}, "
-                    f"last_name={bool(job_data.get('last_name'))}, "
-                    f"company_name={bool(job_data.get('company_name'))}"
+                    f"Full job data: {job_data}"
                 )
             
             # company_name is optional, but if present it should be a string (can be empty)
