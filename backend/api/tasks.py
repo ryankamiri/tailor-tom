@@ -53,11 +53,26 @@ def configure_worker(sender, **kwargs):
             
             if missing_fields:
                 logger.error(
-                    f"[worker_ready] Cannot re-enqueue job {job_id}: missing fields {missing_fields}. "
-                    f"Resetting to 'pending' status."
+                    f"[worker_ready] Cannot re-enqueue job {job_id}: missing required fields {missing_fields}. "
+                    f"Marking as failed - job data is incomplete and cannot be recovered."
                 )
-                # Reset to pending - if task is still in queue (task_acks_late), it will be redelivered
-                update_job_status(job_id, "pending")
+                # Mark as failed - these are old jobs missing required data, cannot be processed
+                update_job_status(
+                    job_id,
+                    "failed",
+                    completed_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                    error_message=f"Job cannot be recovered: missing required fields ({', '.join(missing_fields)}). This job was created before the system update and is missing critical data.",
+                    result={
+                        "optimized_latex": "",
+                        "filename": "resume.pdf",
+                        "error_details": {
+                            "iterations": 0,
+                            "optimized_latex_available": False,
+                            "original_latex_length": 0,
+                            "optimized_latex_length": 0,
+                        }
+                    },
+                )
                 continue
             
             try:
