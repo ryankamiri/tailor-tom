@@ -470,8 +470,16 @@ def _extract_non_item_latex(latex: str) -> str:
     Returns:
         LaTeX with \\item content replaced by placeholders, but command definitions preserved.
     """
+    # FIRST: Normalize whitespace BEFORE extraction to ensure consistent structure comparison
+    # This handles cases where LLM only changes whitespace (blank lines, spacing between items)
+    # We normalize here so that structural differences are only detected if actual LaTeX commands/structure change
+    normalized_latex = re.sub(r'[ \t]+', ' ', latex)  # Multiple spaces/tabs -> single space
+    normalized_latex = re.sub(r'[ \t]*\n[ \t]*', '\n', normalized_latex)  # Normalize newlines (remove spaces around them)
+    normalized_latex = re.sub(r'\n\n\n+', '\n\n', normalized_latex)  # Multiple blank lines -> double newline max
+    normalized_latex = re.sub(r'[ \t]+$', '', normalized_latex, flags=re.MULTILINE)  # Remove trailing spaces on lines
+    
     # Extract command definitions and replace with placeholders
-    command_defs = _extract_command_definitions(latex)
+    command_defs = _extract_command_definitions(normalized_latex)
     
     # Find all commands that produce items (like \resumeItem)
     # Parse command definitions to find commands that expand to \item
@@ -502,7 +510,7 @@ def _extract_non_item_latex(latex: str) -> str:
                     item_producing_commands.add(cmd_name)
     
     # Replace each command definition with a placeholder
-    latex_with_placeholders = latex
+    latex_with_placeholders = normalized_latex
     for i, cmd_def in enumerate(command_defs):
         placeholder = f"COMMAND_DEF_{i}"
         latex_with_placeholders = latex_with_placeholders.replace(cmd_def, placeholder, 1)
@@ -608,18 +616,11 @@ def _extract_non_item_latex(latex: str) -> str:
     for i, cmd_def in enumerate(command_defs):
         replaced = replaced.replace(f"COMMAND_DEF_{i}", cmd_def)
     
-    # Normalize whitespace - collapse multiple spaces/newlines to single ones
-    # This handles cases where LLM only changes whitespace formatting (which is not a structural change)
-    
-    # First, normalize all whitespace sequences
-    replaced = re.sub(r'[ \t]+', ' ', replaced)  # Multiple spaces/tabs -> single space
-    replaced = re.sub(r'[ \t]*\n[ \t]*', '\n', replaced)  # Normalize newlines (remove spaces around them)
+    # Final normalization pass to ensure consistent structure
+    # This handles any edge cases where item replacement might have introduced inconsistencies
     replaced = re.sub(r'\n\n\n+', '\n\n', replaced)  # Multiple blank lines -> double newline max
-    replaced = re.sub(r'[ \t]+$', '', replaced, flags=re.MULTILINE)  # Remove trailing spaces on lines
     
-    # Normalize trailing newlines - ensure both end with exactly one newline (or no newline)
-    # Remove all trailing newlines, then add exactly one
-    replaced_before_trailing = replaced
+    # Normalize trailing newlines - ensure both end with exactly one newline
     replaced = replaced.rstrip('\n')
     replaced = replaced + '\n'  # Add exactly one trailing newline
     
