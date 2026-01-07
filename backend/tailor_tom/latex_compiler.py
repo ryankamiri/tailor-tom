@@ -97,7 +97,6 @@ _PACKAGE_PATTERN = re.compile(
 # Compiled regexes for command detection
 _COMMAND_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in _XETEX_COMMAND_PATTERNS]
 
-
 @lru_cache(maxsize=128)
 def _detect_required_engine(content: str) -> str:
     """Detect which LaTeX engine is required based on document content.

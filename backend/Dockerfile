@@ -3,9 +3,24 @@ FROM python:3.10-slim
 # Install LaTeX engines (xelatex, lualatex, pdflatex) and required packages
 # Using texlive-full for maximum compatibility (~5GB)
 # For smaller size, use: texlive-latex-base texlive-latex-extra texlive-fonts-recommended texlive-latex-recommended texlive-xetex (~500MB)
+# Also install fontconfig and common fonts for XeTeX/fontspec support
+# Liberation Sans is a free, metrically compatible alternative to Arial
 RUN apt-get update && apt-get install -y \
     texlive-full \
-    && rm -rf /var/lib/apt/lists/*
+    fontconfig \
+    fonts-dejavu \
+    fonts-dejavu-core \
+    fonts-dejavu-extra \
+    fonts-liberation \
+    fonts-liberation2 \
+    fonts-noto \
+    fonts-noto-core \
+    fonts-noto-extra \
+    wget \
+    && echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections \
+    && apt-get install -y ttf-mscorefonts-installer \
+    && rm -rf /var/lib/apt/lists/* \
+    && fc-cache -fv
 
 WORKDIR /app
 
