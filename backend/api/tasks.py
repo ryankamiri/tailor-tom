@@ -81,14 +81,15 @@ def configure_worker(sender, **kwargs):
             if missing_fields:
                 logger.error(
                     f"[worker_ready] Cannot re-enqueue job {job_id}: missing required fields {missing_fields}. "
-                    f"Marking as failed - job data is incomplete and cannot be recovered."
+                    f"Marking as failed - job data is incomplete and cannot be recovered. "
+                    f"This may indicate a bug in job creation or Redis storage."
                 )
-                # Mark as failed - these are old jobs missing required data, cannot be processed
+                # Mark as failed - job is missing required data, cannot be processed
                 update_job_status(
                     job_id,
                     "failed",
                     completed_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-                    error_message=f"Job cannot be recovered: missing required fields ({', '.join(missing_fields)}). This job was created before the system update and is missing critical data.",
+                    error_message=f"Job cannot be recovered: missing required fields ({', '.join(missing_fields)}). The job data is incomplete and cannot be processed.",
                     result={
                         "optimized_latex": "",
                         "filename": "resume.pdf",

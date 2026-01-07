@@ -83,6 +83,18 @@ def create_job(job_id: str, job_data: Dict[str, Any]) -> None:
     # Store as hash
     client.hset(key, mapping=job_data_copy)
     client.expire(key, ttl_seconds)
+    
+    # Verify critical fields were stored (for debugging)
+    required_fields = ["job_description", "max_bullet_lines", "first_name", "last_name", "original_latex"]
+    stored_data = client.hgetall(key)
+    missing_stored = [f for f in required_fields if f not in stored_data or stored_data.get(f) == ""]
+    if missing_stored:
+        logger.error(
+            f"[create_job] CRITICAL: Job {job_id} created but required fields missing from Redis: {missing_stored}. "
+            f"Fields in job_data: {list(job_data.keys())}. "
+            f"Fields in job_data_copy: {list(job_data_copy.keys())}. "
+            f"Fields actually stored: {list(stored_data.keys())}"
+        )
 
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
