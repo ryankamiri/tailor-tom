@@ -4,7 +4,9 @@ FROM python:3.10-slim
 # Using texlive-full for maximum compatibility (~5GB)
 # For smaller size, use: texlive-latex-base texlive-latex-extra texlive-fonts-recommended texlive-latex-recommended texlive-xetex (~500MB)
 # Also install fontconfig and common fonts for XeTeX/fontspec support
-RUN apt-get update && apt-get install -y \
+RUN sed -i 's/main/main contrib non-free/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's/deb \(.*\) main/deb \1 main contrib non-free/g' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y \
     texlive-full \
     fontconfig \
     fonts-dejavu \
@@ -16,6 +18,8 @@ RUN apt-get update && apt-get install -y \
     fonts-noto-core \
     fonts-noto-extra \
     wget \
+    cabextract \
+    xfonts-utils \
     && echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections \
     && apt-get install -y ttf-mscorefonts-installer \
     && rm -rf /var/lib/apt/lists/* \
