@@ -1676,6 +1676,9 @@ def configure_dspy(
     temperature: Optional[float] = None,
 ) -> None:
     """Configure DSPy with the specified model.
+    
+    This function is idempotent - if DSPy is already configured, it will not reconfigure.
+    This allows it to be called safely in each task execution.
 
     Args:
         model_name: Model identifier (e.g., "openai/gpt-5-mini").
@@ -1683,6 +1686,15 @@ def configure_dspy(
         max_tokens: Maximum tokens for LLM responses. Defaults to settings.max_tokens.
         temperature: Temperature for generation. Defaults to settings.temperature.
     """
+    # Check if DSPy is already configured
+    # DSPy stores the LM in dspy.settings.lm - if it exists, we're already configured
+    try:
+        if hasattr(dspy.settings, 'lm') and dspy.settings.lm is not None:
+            return  # Already configured, skip
+    except (AttributeError, Exception):
+        # If we can't check, proceed with configuration
+        pass
+    
     model_name = model_name or settings.model_name
     api_key = api_key or settings.openai_api_key
     max_tokens = max_tokens or settings.max_tokens

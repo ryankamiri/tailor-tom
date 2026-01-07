@@ -199,7 +199,11 @@ def optimize_resume_task(
         if job.get("status") == "failed" and job.get("error_message") == "Job cancelled by user":
             return
         
-        # DSPy is configured globally when worker starts (see @worker_ready.connect)
+        # Configure DSPy (idempotent - only configures if not already configured)
+        # This ensures DSPy is configured even if worker_ready signal didn't fire
+        # or if worker process restarted (worker_max_tasks_per_child=50)
+        configure_dspy()
+        
         # Run optimization
         # Status will be updated to "processing" at the start of Phase 1 (actual work begins)
         result = optimize_resume(
