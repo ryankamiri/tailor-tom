@@ -4,14 +4,11 @@ import gc
 import logging
 import os
 import sys
-import tracemalloc
 from datetime import datetime, timezone
 
 from billiard.exceptions import TimeLimitExceeded
 from celery.exceptions import SoftTimeLimitExceeded
 from celery.signals import worker_ready
-
-import psutil
 
 from api.celery_app import celery_app
 from api.job_fields import JOB_REENQUEUE_REQUIRED_FIELDS, JOB_RESTART_COUNT_FIELD, JOB_LAST_RESTART_TIME_FIELD
@@ -265,67 +262,6 @@ def _on_task_failure(self, exc, task_id, args, kwargs, einfo):
         logger.error(f"[optimize_resume_task] Error in failure callback: {e}")
 
 
-def _get_memory_mb() -> float:
-    """Get current memory usage in MB.
-    
-    Returns the total memory (RSS) for the entire worker process.
-    In Celery prefork mode, each worker is a separate process with its own memory space.
-    This measures the total memory for the current worker process (including all threads if any).
-    
-    Note: With concurrency=3, there are 3 separate worker processes, each with its own 512MB limit.
-    This function measures one process at a time - each process is tracked independently.
-    """
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / 1024 / 1024
-
-
-def _log_memory_snapshot(label: str, job_id: str, threshold_mb: float = 400.0) -> None:
-    """Log detailed memory snapshot with tracemalloc statistics.
-    
-    Args:
-        label: Label for this memory snapshot (e.g., "after LLM call")
-        job_id: Job ID for logging context
-        threshold_mb: Memory threshold in MB to trigger warnings (default: 400MB)
-    """
-    current_memory = _get_memory_mb()
-    
-    # Log basic memory info
-    logger.error(f"[MEMORY] [{label}] Job {job_id}: {current_memory:.1f} MB")
-    
-    # Check threshold
-    if current_memory > threshold_mb:
-        logger.error(f"[MEMORY] [WARNING] Job {job_id} memory ({current_memory:.1f} MB) exceeds threshold ({threshold_mb:.1f} MB) at {label}")
-    
-    # Get tracemalloc statistics if available
-    if tracemalloc.is_tracing():
-        snapshot = tracemalloc.take_snapshot()
-        top_stats = snapshot.statistics('lineno')
-        
-        # Log top 10 memory allocations
-        logger.error(f"[MEMORY] [TRACEMALLOC] [{label}] Job {job_id} - Top 10 allocations:")
-        for index, stat in enumerate(top_stats[:10], 1):
-            logger.error(f"[MEMORY] [TRACEMALLOC] #{index}: {stat.traceback.format()[-1]}: {stat.size / 1024 / 1024:.2f} MB ({stat.count} blocks)")
-        
-        # Get current vs peak memory
-        current, peak = tracemalloc.get_traced_memory()
-        logger.error(f"[MEMORY] [TRACEMALLOC] [{label}] Job {job_id} - Traced: {current / 1024 / 1024:.2f} MB current, {peak / 1024 / 1024:.2f} MB peak")
-
-
-def _check_memory_growth(initial_memory: float, current_memory: float, label: str, job_id: str, growth_threshold_mb: float = 50.0) -> None:
-    """Check if memory has grown significantly and log warning.
-    
-    Args:
-        initial_memory: Initial memory at job start
-        current_memory: Current memory
-        label: Label for this check
-        job_id: Job ID for logging context
-        growth_threshold_mb: Growth threshold in MB to trigger warnings (default: 50MB)
-    """
-    growth = current_memory - initial_memory
-    if growth > growth_threshold_mb:
-        logger.error(f"[MEMORY] [WARNING] Job {job_id} memory growth at {label}: {growth:.1f} MB (from {initial_memory:.1f} MB to {current_memory:.1f} MB)")
-
-
 @celery_app.task(bind=True, name="api.tasks.optimize_resume_task", on_failure=_on_task_failure)
 def optimize_resume_task(
     self,
@@ -354,15 +290,6 @@ def optimize_resume_task(
         last_name: User's last name for filename
         company_name: Company name for filename
     """
-    # Start memory tracking with tracemalloc
-    tracemalloc.start()
-    initial_memory = _get_memory_mb()
-    logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} started. Initial memory: {initial_memory:.1f} MB")
-    logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} resume_latex size: {len(resume_latex)} bytes ({len(resume_latex)/1024:.1f} KB)")
-    
-    # Log initial memory snapshot
-    _log_memory_snapshot("job_start", job_id)
-    
     try:
         # Check if job was cancelled
         job = get_job(job_id)
@@ -380,11 +307,6 @@ def optimize_resume_task(
         
         # Run optimization
         # Status will be updated to "processing" at the start of Phase 1 (actual work begins)
-        pre_optimize_memory = _get_memory_mb()
-        logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} before optimize_resume: {pre_optimize_memory:.1f} MB")
-        _check_memory_growth(initial_memory, pre_optimize_memory, "before_optimize", job_id)
-        _log_memory_snapshot("before_optimize", job_id)
-        
         result = optimize_resume(
             resume_latex=resume_latex,
             job_description=job_description,
@@ -393,11 +315,6 @@ def optimize_resume_task(
             max_bullet_lines=max_bullet_lines,
             job_id=job_id,  # Pass job_id so optimizer can update status when work actually starts
         )
-        
-        post_optimize_memory = _get_memory_mb()
-        logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} after optimize_resume: {post_optimize_memory:.1f} MB (delta: {post_optimize_memory - pre_optimize_memory:.1f} MB)")
-        _check_memory_growth(initial_memory, post_optimize_memory, "after_optimize", job_id)
-        _log_memory_snapshot("after_optimize", job_id)
         
         if result.success:
             # Generate filename using provided company name (Title_Case format)
@@ -419,12 +336,7 @@ def optimize_resume_task(
             )
             
             # Explicit cleanup of large objects
-            before_cleanup_memory = _get_memory_mb()
-            _log_memory_snapshot("before_cleanup", job_id)
-            
             if hasattr(result, 'pdf_bytes') and result.pdf_bytes:
-                pdf_size_mb = len(result.pdf_bytes) / 1024 / 1024
-                logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} deleting PDF bytes: {pdf_size_mb:.1f} MB")
                 del result.pdf_bytes
             
             del resume_latex
@@ -436,16 +348,6 @@ def optimize_resume_task(
                 collected = gc.collect()
                 if collected == 0:
                     break
-            
-            after_cleanup_memory = _get_memory_mb()
-            freed_memory = before_cleanup_memory - after_cleanup_memory
-            logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} after cleanup: {after_cleanup_memory:.1f} MB (freed: {freed_memory:.1f} MB)")
-            _log_memory_snapshot("after_cleanup", job_id)
-            _check_memory_growth(initial_memory, after_cleanup_memory, "after_cleanup", job_id)
-            
-            # Check if memory was actually freed
-            if freed_memory < 5.0:  # If less than 5MB was freed, something might be wrong
-                logger.error(f"[MEMORY] [WARNING] Job {job_id} cleanup freed only {freed_memory:.1f} MB - possible memory leak")
         else:
             # Update job with error
             # Even if optimization failed, store optimized_latex if available (user can still view/use it)
@@ -499,8 +401,6 @@ def optimize_resume_task(
             )
             
             # Log minimal error to backend (full details will be logged in frontend)
-            final_memory = _get_memory_mb()
-            logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} failed. Final memory: {final_memory:.1f} MB (total: {final_memory - initial_memory:.1f} MB)")
             logger.error(f"[optimize_resume_task] Job {job_id} failed: {error_message}")
             
             # Cleanup even on failure
@@ -513,9 +413,6 @@ def optimize_resume_task(
                     gc.collect()
             except:
                 pass
-            
-            _log_memory_snapshot("after_failure_cleanup", job_id)
-            _check_memory_growth(initial_memory, final_memory, "after_failure", job_id)
             
     except (TimeLimitExceeded, SoftTimeLimitExceeded) as e:
         # Handle timeout exceptions - mark job as failed
@@ -569,9 +466,6 @@ def optimize_resume_task(
         )
         
         # Re-raise to trigger Celery retry (for non-timeout exceptions)
-        final_memory = _get_memory_mb()
-        logger.error(f"[DEBUG] [optimize_resume_task] Job {job_id} exception. Final memory: {final_memory:.1f} MB (total: {final_memory - initial_memory:.1f} MB)")
-        
         # Cleanup on exception
         try:
             if 'resume_latex' in locals():
@@ -585,24 +479,8 @@ def optimize_resume_task(
         except:
             pass
         
-        _log_memory_snapshot("after_exception_cleanup", job_id)
-        _check_memory_growth(initial_memory, final_memory, "after_exception", job_id)
-        
-        tracemalloc.stop()
         raise
     finally:
-        # Final cleanup and memory tracking
-        final_memory = _get_memory_mb()
-        total_growth = final_memory - initial_memory
-        
-        # Log final memory state
-        logger.error(f"[MEMORY] [FINAL] Job {job_id}: Started at {initial_memory:.1f} MB, ended at {final_memory:.1f} MB (growth: {total_growth:.1f} MB)")
-        
-        if total_growth > 30.0:  # If memory grew more than 30MB, log warning
-            logger.error(f"[MEMORY] [WARNING] Job {job_id} left {total_growth:.1f} MB of memory growth - possible leak")
-            _log_memory_snapshot("final_state", job_id)
-        
-        # Stop memory tracking
-        if tracemalloc.is_tracing():
-            tracemalloc.stop()
+        # Final cleanup
+        pass
 

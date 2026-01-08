@@ -10,13 +10,11 @@ import logging
 import os
 import re
 import sys
-import tracemalloc
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
 
 import dspy
 import fitz  # PyMuPDF
-import psutil
 
 from tailor_tom.config import settings
 from tailor_tom.latex_compiler import compile_latex, CompileResult, validate_latex
@@ -24,46 +22,6 @@ from tailor_tom.layout_analyzer import analyze_layout, check_quality, QualityRes
 from api.storage import update_job_status
 
 logger = logging.getLogger(__name__)
-
-
-def _get_memory_mb() -> float:
-    """Get current memory usage in MB."""
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / 1024 / 1024
-
-
-def _log_memory_snapshot(label: str, job_id: Optional[str] = None, threshold_mb: float = 400.0) -> None:
-    """Log detailed memory snapshot with tracemalloc statistics.
-    
-    Args:
-        label: Label for this memory snapshot (e.g., "after LLM call")
-        job_id: Optional job ID for logging context
-        threshold_mb: Memory threshold in MB to trigger warnings (default: 400MB)
-    """
-    current_memory = _get_memory_mb()
-    
-    # Log basic memory info
-    job_prefix = f"Job {job_id} " if job_id else ""
-    logger.error(f"[MEMORY] [{label}] {job_prefix}{current_memory:.1f} MB")
-    
-    # Check threshold
-    if current_memory > threshold_mb:
-        logger.error(f"[MEMORY] [WARNING] {job_prefix}memory ({current_memory:.1f} MB) exceeds threshold ({threshold_mb:.1f} MB) at {label}")
-    
-    # Get tracemalloc statistics if available
-    if tracemalloc.is_tracing():
-        snapshot = tracemalloc.take_snapshot()
-        top_stats = snapshot.statistics('lineno')
-        
-        # Log top 10 memory allocations
-        logger.error(f"[MEMORY] [TRACEMALLOC] [{label}] {job_prefix}Top 10 allocations:")
-        for index, stat in enumerate(top_stats[:10], 1):
-            traceback_line = stat.traceback.format()[-1] if stat.traceback else "unknown"
-            logger.error(f"[MEMORY] [TRACEMALLOC] #{index}: {traceback_line}: {stat.size / 1024 / 1024:.2f} MB ({stat.count} blocks)")
-        
-        # Get current vs peak memory
-        current, peak = tracemalloc.get_traced_memory()
-        logger.error(f"[MEMORY] [TRACEMALLOC] [{label}] {job_prefix}Traced: {current / 1024 / 1024:.2f} MB current, {peak / 1024 / 1024:.2f} MB peak")
 
 
 # =============================================================================
@@ -178,6 +136,10 @@ def _fix_latex_issues(latex: str) -> str:
             if stack:
                 protected_ranges.append((stack.pop(), env['pos']))
     
+    # Clear intermediate lists after use
+    tabular_envs = None
+    stack = None
+    
     # 2. Math alignment environments (also use & as column separator)
     math_align_patterns = [
         r'\\begin\{align\*?\}',
@@ -222,6 +184,10 @@ def _fix_latex_issues(latex: str) -> str:
         else:
             if stack:
                 protected_ranges.append((stack.pop(), env['pos']))
+    
+    # Clear intermediate lists after use
+    math_align_envs = None
+    stack = None
     
     # 3. Inline and display math: $...$, \(...\), \[...\], $$...$$
     # Track positions already covered by $$ to avoid double-matching
@@ -305,6 +271,11 @@ def _fix_latex_issues(latex: str) -> str:
             if stack:
                 protected_ranges.append((stack.pop(), env['pos']))
     
+    # Clear intermediate lists after use
+    verbatim_envs = None
+    stack = None
+    dollar_dollar_positions = None
+    
     # 5. \verb|...| commands (inline verbatim)
     for match in re.finditer(r'\\verb([^\\\s])', fixed):
         delimiter = match.group(1)
@@ -349,6 +320,9 @@ def _fix_latex_issues(latex: str) -> str:
         i += 1
     
     fixed = ''.join(result)
+    
+    # Clear intermediate data structures after use
+    result = None
     
     # Fix incomplete commands (missing closing braces)
     # Check for \textbf{ that doesn't have a closing brace
@@ -435,6 +409,10 @@ def _fix_latex_issues(latex: str) -> str:
     for pos, length in reversed(extra_end_positions):
         fixed = fixed[:pos] + fixed[pos + length:]
     
+    # Clear intermediate lists after use
+    all_tags = None
+    extra_end_positions = None
+    
     # Any remaining items in open_stack are unclosed environments
     # Add their closing tags before \end{document}
     if open_stack:
@@ -445,6 +423,10 @@ def _fix_latex_issues(latex: str) -> str:
         # Insert closing tags in reverse order (LIFO - last opened, first closed)
         closing_tags = '\n'.join([f'\\end{{{env}}}' for env in reversed(open_stack)])
         fixed = fixed[:end_doc_pos] + '\n' + closing_tags + '\n' + fixed[end_doc_pos:]
+    
+    # Clear intermediate data after use
+    open_stack = None
+    protected_ranges = None
     
     # Fix unmatched braces - count braces and try to balance (after all other fixes)
     # This ensures any braces added by previous fixes are accounted for
@@ -504,6 +486,8 @@ def _extract_non_item_latex(latex: str) -> str:
     Returns:
         LaTeX with \\item content replaced by placeholders, but command definitions preserved.
     """
+    logger.error(f"[DEBUG] [_extract_non_item_latex] Input LaTeX length: {len(latex)} chars")
+    
     # FIRST: Normalize whitespace BEFORE extraction to ensure consistent structure comparison
     # This handles cases where LLM only changes whitespace (blank lines, spacing between items)
     # We normalize here so that structural differences are only detected if actual LaTeX commands/structure change
@@ -511,9 +495,11 @@ def _extract_non_item_latex(latex: str) -> str:
     normalized_latex = re.sub(r'[ \t]*\n[ \t]*', '\n', normalized_latex)  # Normalize newlines (remove spaces around them)
     normalized_latex = re.sub(r'\n\n\n+', '\n\n', normalized_latex)  # Multiple blank lines -> double newline max
     normalized_latex = re.sub(r'[ \t]+$', '', normalized_latex, flags=re.MULTILINE)  # Remove trailing spaces on lines
+    logger.error(f"[DEBUG] [_extract_non_item_latex] After normalization: {len(normalized_latex)} chars")
     
     # Extract command definitions and replace with placeholders
     command_defs = _extract_command_definitions(normalized_latex)
+    logger.error(f"[DEBUG] [_extract_non_item_latex] Found {len(command_defs)} command definitions")
     
     # Find all commands that produce items (like \resumeItem)
     # Parse command definitions to find commands that expand to \item
@@ -555,6 +541,7 @@ def _extract_non_item_latex(latex: str) -> str:
     
     # Find all item positions in the document
     item_positions = []
+    logger.error(f"[DEBUG] [_extract_non_item_latex] Item-producing commands: {item_producing_commands}")
     
     # Find all item commands
     for cmd in item_producing_commands:
@@ -622,6 +609,7 @@ def _extract_non_item_latex(latex: str) -> str:
     
     # Sort by position (reverse order so we can replace from end to start without affecting positions)
     item_positions.sort(key=lambda x: x['start'], reverse=True)
+    logger.error(f"[DEBUG] [_extract_non_item_latex] Found {len(item_positions)} item positions")
     
     # Replace each item's content with PLACEHOLDER
     for idx, item_info in enumerate(item_positions):
@@ -657,6 +645,9 @@ def _extract_non_item_latex(latex: str) -> str:
     # Normalize trailing newlines - ensure both end with exactly one newline
     replaced = replaced.rstrip('\n')
     replaced = replaced + '\n'  # Add exactly one trailing newline
+    
+    logger.error(f"[DEBUG] [_extract_non_item_latex] Final structure length: {len(replaced)} chars")
+    logger.error(f"[DEBUG] [_extract_non_item_latex] Final structure (first 500 chars): {repr(replaced[:500])}")
     
     return replaced
 
@@ -762,10 +753,16 @@ def _validate_latex_structure(optimized_latex: str, original_latex: str) -> Tupl
     Returns:
         Tuple of (is_valid, error_message). is_valid is True if structure preserved.
     """
+    logger.error("[DEBUG] [STRUCTURE VALIDATION] Starting validation...")
+    logger.error(f"[DEBUG] [STRUCTURE VALIDATION] Original LaTeX length: {len(original_latex)} chars")
+    logger.error(f"[DEBUG] [STRUCTURE VALIDATION] Optimized LaTeX length: {len(optimized_latex)} chars")
     
     # First, check command definitions separately (most critical)
+    logger.error("[DEBUG] [STRUCTURE VALIDATION] Extracting command definitions...")
     original_cmd_defs = sorted(_extract_command_definitions(original_latex))
     optimized_cmd_defs = sorted(_extract_command_definitions(optimized_latex))
+    logger.error(f"[DEBUG] [STRUCTURE VALIDATION] Original command definitions count: {len(original_cmd_defs)}")
+    logger.error(f"[DEBUG] [STRUCTURE VALIDATION] Optimized command definitions count: {len(optimized_cmd_defs)}")
     
     
     if original_cmd_defs != optimized_cmd_defs:
@@ -803,10 +800,14 @@ def _validate_latex_structure(optimized_latex: str, original_latex: str) -> Tupl
             return False, "Command definitions were modified. Command definitions (\\newcommand, \\renewcommand, etc.) must NEVER be changed."
     
     # Extract non-item LaTeX (structure only)
+    logger.error("[DEBUG] [STRUCTURE VALIDATION] Extracting non-item LaTeX structures...")
     original_structure = _extract_non_item_latex(original_latex)
     optimized_structure = _extract_non_item_latex(optimized_latex)
+    logger.error(f"[DEBUG] [STRUCTURE VALIDATION] Original structure length: {len(original_structure)} chars")
+    logger.error(f"[DEBUG] [STRUCTURE VALIDATION] Optimized structure length: {len(optimized_structure)} chars")
     
     if original_structure != optimized_structure:
+        logger.error("[DEBUG] [STRUCTURE VALIDATION] Structures are different - analyzing differences...")
         logger.error("[STRUCTURE VALIDATION] LaTeX structure differs!")
         logger.error("=" * 80)
         logger.error("[STRUCTURE VALIDATION] ORIGINAL STRUCTURE (first 2000 chars):")
@@ -1436,13 +1437,7 @@ class ResumeOptimizerPipeline(dspy.Module):
             update_job_status(self.job_id, "processing")
         
         # Phase 1: ATS Keyword Optimization
-        phase1_start_memory = _get_memory_mb()
-        logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 1 start. Memory: {phase1_start_memory:.1f} MB")
-        _log_memory_snapshot("phase1_start", self.job_id)
-        
         try:
-            logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Calling LLM for Phase 1 ATS optimization...")
-            llm_call_start = _get_memory_mb()
             
             ats_result = self.ats_optimizer(
                 resume_latex=resume_latex,
@@ -1450,13 +1445,10 @@ class ResumeOptimizerPipeline(dspy.Module):
                 target_pages=self.target_pages,
             )
             
-            llm_call_end = _get_memory_mb()
-            logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 1 LLM call completed. Memory: {llm_call_end:.1f} MB (delta: {llm_call_end - llm_call_start:.1f} MB)")
-            _log_memory_snapshot("phase1_after_llm", self.job_id)
-            
             phase1_latex = _fix_latex_issues(ats_result.optimized_latex)
-            after_fix_memory = _get_memory_mb()
-            logger.error(f"[DEBUG] [ResumeOptimizerPipeline] After _fix_latex_issues. Memory: {after_fix_memory:.1f} MB")
+            
+            # Cleanup intermediate data from _fix_latex_issues
+            gc.collect()
             
             # Cleanup LLM result object
             del ats_result
@@ -1492,10 +1484,13 @@ class ResumeOptimizerPipeline(dspy.Module):
             phase1_latex = _fix_latex_issues(phase1_latex)
 
         # Validate LaTeX structure (only \item content should change)
+        logger.error("[DEBUG] [Phase 1] Starting LaTeX structure validation...")
         structure_valid, structure_error = _validate_latex_structure(phase1_latex, resume_latex)
         if not structure_valid:
             logger.error(f"[Phase 1] LaTeX structure validation failed: {structure_error}")
             logger.error(f"[Phase 1] This is a critical error - the LLM modified LaTeX structure when it should only change \\item content")
+            logger.error(f"[DEBUG] [Phase 1] Original LaTeX (first 1000 chars): {repr(resume_latex[:1000])}")
+            logger.error(f"[DEBUG] [Phase 1] Optimized LaTeX (first 1000 chars): {repr(phase1_latex[:1000])}")
             return OptimizationResult(
                 success=False,
                 original_latex=resume_latex,
@@ -1510,13 +1505,6 @@ class ResumeOptimizerPipeline(dspy.Module):
         education_preserved = _validate_section_preservation(phase1_latex, resume_latex, "Education")
         
         phase1_compile = compile_latex(phase1_latex)
-        phase1_compile_memory = _get_memory_mb()
-        if phase1_compile.success and phase1_compile.pdf_bytes:
-            pdf_size_mb = len(phase1_compile.pdf_bytes) / 1024 / 1024
-            logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 1 compiled. Memory: {phase1_compile_memory:.1f} MB. PDF size: {pdf_size_mb:.1f} MB")
-            _log_memory_snapshot("phase1_after_compile", self.job_id)
-        else:
-            logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 1 compile failed. Memory: {phase1_compile_memory:.1f} MB")
         
         if not phase1_compile.success:
             phase1_latex = _fix_latex_issues(phase1_latex)
@@ -1594,10 +1582,7 @@ class ResumeOptimizerPipeline(dspy.Module):
             bullets_data = bullet_metrics.get("bullets", [])
             
             # Calculate utilization for bullets (same logic as analyze_layout)
-            before_doc_memory = _get_memory_mb()
             doc = fitz.open(stream=current_compile.pdf_bytes, filetype="pdf")
-            after_doc_open_memory = _get_memory_mb()
-            logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 2 iteration {iteration + 1} opened PyMuPDF doc. Memory: {after_doc_open_memory:.1f} MB (delta: {after_doc_open_memory - before_doc_memory:.1f} MB)")
             
             try:
                 if len(doc) > 0:
@@ -1648,21 +1633,14 @@ class ResumeOptimizerPipeline(dspy.Module):
             finally:
                 doc.close()
                 del doc  # Explicitly delete doc reference
-                after_doc_close_memory = _get_memory_mb()
-                logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 2 iteration {iteration + 1} closed PyMuPDF doc. Memory: {after_doc_close_memory:.1f} MB (freed: {after_doc_open_memory - after_doc_close_memory:.1f} MB)")
             
             # CRITICAL: Delete PDF bytes immediately after analysis
             # We only need the metrics, not the PDF bytes
             # Store page count before deleting PDF bytes
             current_pages = current_compile.page_count
-            before_delete_memory = _get_memory_mb()
             if current_compile.pdf_bytes:
-                pdf_size_mb = len(current_compile.pdf_bytes) / 1024 / 1024
-                logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 2 iteration {iteration + 1} deleting PDF. Size: {pdf_size_mb:.1f} MB. Memory before: {before_delete_memory:.1f} MB")
-            del current_compile.pdf_bytes
+                del current_compile.pdf_bytes
             gc.collect()
-            after_delete_memory = _get_memory_mb()
-            logger.error(f"[DEBUG] [ResumeOptimizerPipeline] Phase 2 iteration {iteration + 1} after PDF delete. Memory: {after_delete_memory:.1f} MB (freed: {before_delete_memory - after_delete_memory:.1f} MB)")
             
             # Filter qualifying bullets (includes long bullets and page reduction candidates)
             qualifying_bullets_list = _filter_qualifying_bullets(
