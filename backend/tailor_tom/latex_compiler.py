@@ -126,9 +126,10 @@ def _detect_required_engine(content: str) -> str:
         if pattern.search(content):
             return "xelatex"
     
-    # Default to xelatex for better compatibility with modern packages
-    # This ensures fontspec and other modern packages work out of the box
-    return "xelatex"
+    # Default to pdflatex if no XeTeX-specific features are detected
+    # This ensures packages like fontawesome work correctly
+    # Only use xelatex when explicitly needed (fontspec, etc.)
+    return "pdflatex"
 
 
 def _check_pdflatex_available() -> bool:

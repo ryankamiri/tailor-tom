@@ -445,6 +445,36 @@ def _fix_latex_issues(latex: str) -> str:
     # Remove trailing backslashes before newlines (except line breaks \\)
     fixed = re.sub(r'\\(?<!\\\\)\s*\n', r'\n', fixed)
     
+    # Fix dimension commands missing units (e.g., \vspace{-8} -> \vspace{-8pt})
+    # This is common when users copy LaTeX from Overleaf which is more lenient
+    # Common dimension commands: vspace, hspace, setlength, addtolength, etc.
+    dimension_pattern = r'\\(vspace|hspace|vspace\*|hspace\*)\s*\{(-?\d+(?:\.\d+)?)\}'
+    
+    def add_dimension_unit(match):
+        cmd = match.group(1)
+        value = match.group(2)
+        # Check if value already has a unit
+        if not re.search(r'(pt|em|ex|in|cm|mm|pc|bp|dd|cc|sp)$', value):
+            # Add default unit 'pt' (printer's points, LaTeX default)
+            return f'\\{cmd}{{{value}pt}}'
+        return match.group(0)
+    
+    fixed = re.sub(dimension_pattern, add_dimension_unit, fixed)
+    
+    # Fix \setlength and similar two-argument commands
+    setlength_pattern = r'\\(setlength|addtolength|settowidth|settoheight|settodepth)\s*\{([^}]+)\}\s*\{(-?\d+(?:\.\d+)?)\}'
+    
+    def fix_setlength(match):
+        cmd = match.group(1)
+        length_name = match.group(2)
+        value = match.group(3)
+        # Check if value already has a unit
+        if not re.search(r'(pt|em|ex|in|cm|mm|pc|bp|dd|cc|sp)$', value):
+            return f'\\{cmd}{{{length_name}}}{{{value}pt}}'
+        return match.group(0)
+    
+    fixed = re.sub(setlength_pattern, fix_setlength, fixed)
+    
     return fixed
 
 
@@ -757,208 +787,67 @@ def _generate_output_filename(resume_latex: str, company_name: str) -> str:
 
 
 class OptimizeATSKeywords(dspy.Signature):
-    r"""Optimize resume for ATS by integrating job-relevant keywords through word-level changes.
+    r"""Integrate job-relevant keywords into resume bullet points through word-level replacements.
+
+    GOAL: Replace generic words with job-specific keywords while preserving all content and LaTeX structure exactly.
     
-    YOUR GOAL: Integrate keywords from the job description into the resume by REPLACING WORDS,
-    not by adding or removing content. The content (achievements, metrics, experiences) must
-    remain exactly the same - only the wording changes.
+    RULES (priority order):
+    1. ONLY edit text inside bullet commands (\\item, \\resumeItem, or custom) - preserve ALL LaTeX exactly
+    2. Preserve ALL content - same achievements, metrics, experiences - only change wording
+    3. Keep word count approximately the same - if adding a word, remove another
+    4. Skip Skills and Education sections entirely
+    5. Use keyword VARIETY - max 2-3 uses per keyword; use synonyms (ML/machine learning, APIs/web services)
+    6. Preserve ALL \\vspace, \\hspace, blank lines, comments (%), and whitespace exactly as-is
     
-    ================================================================================
-    CRITICAL CONSTRAINTS (HIGHEST PRIORITY):
-    ================================================================================
+    GOOD EXAMPLES:
+    - "\\resumeItem{Built a database system}" -> "\\resumeItem{Developed a PostgreSQL database system}"
+    - "worked on data" -> "analyzed datasets" (same content, different wording)
     
-    CONTENT PRESERVATION:
-    - PRESERVE ALL CONTENT: Keep all achievements, metrics, experiences, technologies exactly the same
-    - DO NOT add new achievements, metrics, or experiences
-    - DO NOT remove any achievements, metrics, or experiences
-    - DO NOT combine multiple bullets into one - each bullet must remain separate
-    - DO NOT merge content from different bullets - preserve the exact bullet structure
-    - Only change WORD CHOICES - replace generic words with job-specific keywords
-    - Example: "built a database system" -> "developed a PostgreSQL database system" (replaced "built" with "developed", added "PostgreSQL" to replace generic "database")
-    - Example: "worked on data" -> "analyzed datasets" (replaced "worked on data" with "analyzed datasets" - same content, different wording)
-    - BAD: "built a database" -> "built a PostgreSQL database and optimized queries" (ADDED content - FORBIDDEN)
-    - BAD: "built a database system" -> "built system" (REMOVED content - FORBIDDEN)
-    - BAD: Combining two bullets into one - FORBIDDEN
-    
-    LaTeX RESTRICTIONS - CRITICAL: ONLY EDIT TEXT CONTENT:
-    - ONLY edit the TEXT CONTENT within bullet points - identify bullet points by their structure (they may use \\item, \\resumeItem, or any custom command)
-    - DO NOT modify ANY LaTeX commands, environments, or structure - ONLY the text words
-    - DO NOT modify: \\begin{}, \\end{}, \\textbf{}, \\textit{}, \\section{}, \\item, \\resumeItem, or ANY commands
-    - CRITICAL: NEVER remove or modify \\end{} tags - they MUST remain exactly as-is (e.g., \\end{resume_subsection}, \\end{resume_section}, \\end{subitems})
-    - CRITICAL: NEVER uncomment commented sections - if a line starts with %, keep the % exactly as-is
-    - CRITICAL: NEVER remove blank lines between sections - preserve all whitespace and line breaks exactly
-    - DO NOT modify: section environments, formatting commands, preamble, custom commands, or ANY LaTeX structure
-    - DO NOT modify: Skills section LaTeX structure (nospacetabbing, \\=, \\\\, \\>, \\underline)
-    - DO NOT modify: tabular environments, table structures, or ANY formatting
-    - CRITICAL - COMMAND DEFINITIONS: DO NOT modify ANY command definitions in the preamble:
-      * DO NOT modify: \\newcommand{\\command}{...}, \\renewcommand{\\command}{...}, \\providecommand{\\command}{...}
-      * DO NOT modify: ANY command definition, including \\contact, \\name, \\resumeItem, or ANY custom command
-      * Command definitions (like \\newcommand{\\contact}[1]{...}) must remain EXACTLY as-is - changing them will break LaTeX compilation
-      * Example of FORBIDDEN: \\newcommand{\\contact}[1]{...} -> \\newcommand{\\contact}[2]{...} (changed parameter count)
-      * Example of FORBIDDEN: \\newcommand{\\contact}[1]{...} -> \\renewcommand{\\contact}[1]{...} (changed command type)
-    - ONLY change the actual text words within bullet point content - preserve ALL LaTeX commands exactly as-is
-    - Example: If bullet is "\\item{Built a database}" -> "\\item{Developed a PostgreSQL database}" (changed words, kept \\item{} exactly)
-    - Example: If bullet is "\\resumeItem{Built a database}" -> "\\resumeItem{Developed a PostgreSQL database}" (changed words, kept \\resumeItem{} exactly)
-    - BAD: "\\item{Built}" -> "\\textbf{\\item{Built}}" (added command - FORBIDDEN)
-    - BAD: "\\item{Built}" -> "Built" (removed command - FORBIDDEN)
-    
-    SECTION RESTRICTIONS:
-    - SKILLS SECTION: Do NOT edit, modify, or change in ANY way - leave EXACTLY as-is
-    - EDUCATION SECTION: Do NOT edit, modify, or change in ANY way - leave EXACTLY as-is (including coursework, GPA, dates)
-    - EDitable sections: Work Experience, Personal Projects, Certifications, and other sections
-    - When editing Work Experience or Projects: Only edit \\item content, not company names, titles, dates, or section structure
-    
-    KEYWORD INTEGRATION STRATEGY - VARIETY OVER REPETITION:
-    - Read the job description carefully and extract ALL relevant keywords and their synonyms:
-      * Technologies (e.g., "PostgreSQL", "React", "Kubernetes", "DSPy")
-      * Skills (e.g., "machine learning", "data analysis", "API development")
-      * Action verbs (e.g., "developed", "architected", "optimized", "deployed")
-      * Domain terms (e.g., "microservices", "distributed systems", "CI/CD")
-    
-    - CRITICAL: PRIORITIZE KEYWORD VARIETY - AVOID EXCESSIVE REPETITION:
-      * DO NOT repeat the same keyword more than 2-3 times throughout the entire resume
-      * Instead, use synonyms and related terms to show the same skills:
-        - "RESTful APIs" -> also use "REST APIs", "web APIs", "API development", "API services"
-        - "machine learning" -> also use "ML", "ML models", "predictive analytics", "data science"
-        - "developed" -> also use "architected", "built", "engineered", "implemented", "created"
-        - "database" -> also use "PostgreSQL", "MongoDB", "data store", "persistence layer"
-      * Use semantic variations: "API" can become "RESTful services", "web services", "endpoints", "API endpoints"
-      * Natural integration: Keywords should fit naturally in context, not feel forced
-    
-    - Replace generic terms with specific keywords (use variety):
-      * "built" -> "developed", "architected", "engineered" (rotate these, don't always use the same one)
-      * "database" -> "PostgreSQL", "MongoDB", "data store" (use different terms in different bullets)
-      * "AI system" -> "LLM pipeline", "ML model", "AI solution" (vary the terminology)
-      * "worked on" -> "analyzed", "implemented", "designed", "optimized" (use different action verbs)
-    
-    - Use both full terms and acronyms appropriately (but vary them):
-      * "Machine Learning" -> use "ML" in some places, "machine learning" in others, "ML models" elsewhere
-      * "Large Language Model" -> use "LLM" in some places, "language models" in others
-      * "RESTful API" -> use "REST APIs", "RESTful services", "web APIs" - don't repeat the same phrase
-    
-    - Make MANY keyword changes throughout editable sections (aim for 10-20+ keyword integrations)
-    - Maintain semantic meaning - the content must remain truthful and accurate
-    - Natural language: The resume should read naturally to human reviewers, not like keyword stuffing
-    
-    WORD COUNT:
-    - Keep word count approximately the same (minor variations OK, but no significant expansion)
-    - If you add a specific keyword, try to remove a more generic word to balance
-    - Example: "worked on database systems" -> "architected PostgreSQL databases" (added "PostgreSQL", removed "worked on", changed "systems" to "databases")
-    
-    FORMATTING - PRESERVE ALL LaTeX STRUCTURE EXACTLY:
-    - Preserve ALL LaTeX structure EXACTLY: \\begin{}, \\end{}, \\textbf{}, \\item, \\resumeItem, or ANY commands
-    - CRITICAL: NEVER remove or modify \\end{} tags - they MUST remain exactly as-is (e.g., \\end{resume_subsection}, \\end{resume_section}, \\end{subitems})
-    - CRITICAL: NEVER uncomment commented sections - if a line starts with %, keep the % exactly as-is
-    - CRITICAL: NEVER remove blank lines between sections - preserve all whitespace and line breaks exactly
-    - Keep ALL special characters: $|$ (pipe), \\& (ampersand), etc.
-    - DO NOT remove LaTeX comments (lines starting with %) - keep the % character exactly as-is
-    - DO NOT remove whitespace or reformat LaTeX code
-    - DO NOT simplify or "clean up" LaTeX structure
-    - CRITICAL - COMMAND DEFINITIONS: DO NOT modify ANY command definitions in the preamble:
-      * DO NOT modify: \\newcommand{\\command}{...}, \\renewcommand{\\command}{...}, \\providecommand{\\command}{...}
-      * DO NOT modify: ANY command definition, including \\contact, \\name, \\resumeItem, or ANY custom command
-      * Command definitions must remain EXACTLY as-is - changing them will break LaTeX compilation with "Illegal parameter number" errors
-    - ONLY change the actual text words within bullet point content - identify bullets by their structure (may use \\item, \\resumeItem, or any custom command)
-    - Preserve ALL LaTeX environments, formatting, preamble, custom commands, and structure exactly as-is
-    - HEADER: Keep header (name, contact info) on SAME LINE - do not split across lines
-    - REMEMBER: Different resumes use different bullet commands - work with whatever command is used, but ONLY edit the text content inside it
+    BAD EXAMPLES (FORBIDDEN):
+    - "built a database" -> "built a database and optimized queries" (added content)
+    - "\\item{Built}" -> "Built" (removed LaTeX command)
+    - Combining two bullets into one
     """
     
     resume_latex: str = dspy.InputField(desc="Resume in LaTeX format")
-    job_description: str = dspy.InputField(desc="Job description - extract keywords and integrate them through word replacement")
-    target_pages: int = dspy.InputField(desc="Target page count (keep in mind when making changes, but prioritize keyword integration)")
-    optimized_latex: str = dspy.OutputField(desc="Resume with ATS keywords integrated through word-level replacements with VARIETY. Use synonyms and related terms - avoid repeating the same keyword more than 2-3 times. Content preserved exactly, only wording changed. ONLY text content within bullet points modified (regardless of whether bullets use \\item, \\resumeItem, or any custom command). ALL LaTeX structure, commands, and formatting preserved exactly. Skills and Education sections unchanged. Bullet structure preserved - do not combine bullets. Natural language - should read well to human reviewers.")
+    job_description: str = dspy.InputField(desc="Job description to extract keywords from")
+    target_pages: int = dspy.InputField(desc="Target page count")
+    optimized_latex: str = dspy.OutputField(desc="Resume with keywords integrated. Only bullet text changed. All LaTeX, \\vspace, \\hspace, blank lines, and whitespace preserved exactly.")
 
 
 class CondenseLongBullets(dspy.Signature):
-    r"""Condense long bullets to improve resume quality and reduce page count.
+    r"""Condense qualifying multi-line bullets to reduce page count by removing words.
+
+    GOAL: Shorten bullets listed in qualifying_bullets from n lines to n-1 lines. This is the ONLY time content removal is allowed.
     
-    YOUR GOAL: Condense qualifying bullets that are too long (>max_bullet_lines) or need reduction for page count.
-    This is the ONLY time content removal is allowed. Follow the word removal targets specified for each bullet closely - 
-    these are estimates of how many words need to be removed to reduce the bullet from n lines to n-1 lines.
-    
-    ================================================================================
-    CRITICAL CONSTRAINTS (HIGHEST PRIORITY):
-    ================================================================================
-    
-    QUALIFYING BULLETS ONLY:
-    - ONLY edit bullets that are listed in qualifying_bullets
-    - ALL other bullets must remain EXACTLY unchanged
-    - Do NOT edit single-line bullets
-    - Bullets qualify if they are:
-      * Too long (> max_bullet_lines), OR
-      * Resume is over target pages AND bullet is multi-line (2+), OR
-      * Resume is at/below target pages AND bullet is multi-line (2+) with low utilization (<15%)
-    
-    CONTENT REMOVAL ALLOWED:
-    - This is the ONLY time content removal is allowed
-    - For qualifying bullets, you CAN remove words and content to reduce from n lines to n-1 lines
-    - Goal: Reduce each qualifying bullet from its current line count to (line_count - 1) lines
-    - Each bullet has a specific word removal target (e.g., "Remove 15-20 words") - follow these targets closely
-    - Example: 3-line bullet -> reduce to 2 lines, 2-line bullet -> reduce to 1 line
-    
-    DO NOT COMBINE BULLETS:
-    - DO NOT combine multiple bullets into one - each bullet must remain separate
-    - DO NOT merge content from different bullets - preserve the exact bullet structure
-    - Preserve the same number of bullets - if there were 5 bullets, there must still be 5 bullets
-    - Only condense individual bullets, do not merge them together
-    
-    LaTeX RESTRICTIONS - CRITICAL: ONLY EDIT TEXT CONTENT:
-    - ONLY edit the TEXT CONTENT within qualifying bullet points - identify bullets by their structure (they may use \\item, \\resumeItem, or any custom command)
-    - DO NOT modify ANY LaTeX commands, environments, or structure - ONLY the text words
-    - DO NOT modify: \\begin{}, \\end{}, \\textbf{}, \\item, \\resumeItem, or ANY commands
-    - DO NOT modify section structure, formatting, environments, custom commands, or ANY LaTeX structure
-    - CRITICAL - COMMAND DEFINITIONS: DO NOT modify ANY command definitions in the preamble:
-      * DO NOT modify: \\newcommand{\\command}{...}, \\renewcommand{\\command}{...}, \\providecommand{\\command}{...}
-      * DO NOT modify: ANY command definition, including \\contact, \\name, \\resumeItem, or ANY custom command
-      * Command definitions (like \\newcommand{\\contact}[1]{...}) must remain EXACTLY as-is - changing them will break LaTeX compilation
-      * Example of FORBIDDEN: \\newcommand{\\contact}[1]{...} -> \\newcommand{\\contact}[2]{...} (changed parameter count)
-      * Example of FORBIDDEN: \\newcommand{\\contact}[1]{...} -> \\renewcommand{\\contact}[1]{...} (changed command type)
-    - ONLY change the actual text words within qualifying bullet point content - preserve ALL LaTeX commands exactly as-is
-    - Example: If bullet is "\\item{Built a database system}" -> "\\item{Built a PostgreSQL database}" (removed words, kept \\item{} exactly)
-    - Example: If bullet is "\\resumeItem{Built a database system}" -> "\\resumeItem{Built a PostgreSQL database}" (removed words, kept \\resumeItem{} exactly)
-    - BAD: "\\item{Built}" -> "\\textbf{\\item{Built}}" (added command - FORBIDDEN)
-    - BAD: "\\item{Built}" -> "Built" (removed command - FORBIDDEN)
-    - REMEMBER: Different resumes use different bullet commands - work with whatever command is used, but ONLY edit the text content inside it
-    
-    SECTION RESTRICTIONS:
-    - EDUCATION SECTION: Do NOT edit any bullets in Education section (even if they qualify)
-    - Other sections: Can edit qualifying bullets
+    RULES (priority order):
+    1. ONLY edit bullets listed in qualifying_bullets - ALL others must remain EXACTLY unchanged
+    2. ONLY edit text inside bullet commands (\\item, \\resumeItem, or custom) - preserve ALL LaTeX exactly
+    3. Preserve ALL \\vspace, \\hspace, blank lines, comments (%), and whitespace exactly as-is
+    4. Follow word removal targets closely (e.g., "Remove 15-20 words" means remove that many)
+    5. Keep same number of bullets - do NOT combine or merge bullets
+    6. Skip Education section bullets entirely
     
     CONDENSATION STRATEGY:
-    - Follow the word removal targets specified for each bullet (e.g., "Remove 15-20 words")
-    - Use abbreviations aggressively: "operational" -> "ops", "production-grade" -> "prod", "Machine Learning" -> "ML", "Large Language Model" -> "LLM"
-    - Replace long phrases with shorter synonyms: "utilizing" -> "using", "demonstrated" -> "showed", "infrastructure" -> "infra"
-    - Remove less critical details or parenthetical information
-    - Remove redundant qualifiers: "successfully", "effectively" (if truly redundant)
-    - Shorten phrases: "a team of 4" -> "4-person team", "improving operational success" -> "improving ops success"
-    - Look at the line-by-line breakdown provided - target the longest lines for the most word removal
-    - Remember: LaTeX breaks lines automatically when compiled - the only way to reduce lines is to remove words
-    - Be AGGRESSIVE - remove the full word count target (or close to it) to ensure the bullet actually reduces in line count
+    - Use abbreviations: "operational" -> "ops", "Machine Learning" -> "ML", "infrastructure" -> "infra"
+    - Shorten phrases: "a team of 4" -> "4-person team", "utilizing" -> "using"
+    - Remove redundant qualifiers: "successfully", "effectively"
+    - Remove less critical parenthetical details
+    - Be AGGRESSIVE - remove the full word count target to ensure line reduction
     
-    FORMATTING - PRESERVE ALL LaTeX STRUCTURE EXACTLY:
-    - Preserve ALL LaTeX structure EXACTLY: \\begin{}, \\end{}, \\textbf{}, \\item, \\resumeItem, or ANY commands
-    - CRITICAL: NEVER remove or modify \\end{} tags - they MUST remain exactly as-is (e.g., \\end{resume_subsection}, \\end{resume_section}, \\end{subitems})
-    - CRITICAL: NEVER uncomment commented sections - if a line starts with %, keep the % exactly as-is
-    - CRITICAL: NEVER remove blank lines between sections - preserve all whitespace and line breaks exactly
-    - Keep ALL special characters: $|$ (pipe), \\& (ampersand), etc.
-    - DO NOT remove LaTeX comments (lines starting with %) - keep the % character exactly as-is
-    - DO NOT remove whitespace or reformat LaTeX code
-    - DO NOT simplify or "clean up" LaTeX structure
-    - CRITICAL - COMMAND DEFINITIONS: DO NOT modify ANY command definitions in the preamble:
-      * DO NOT modify: \\newcommand{\\command}{...}, \\renewcommand{\\command}{...}, \\providecommand{\\command}{...}
-      * DO NOT modify: ANY command definition, including \\contact, \\name, \\resumeItem, or ANY custom command
-      * Command definitions must remain EXACTLY as-is - changing them will break LaTeX compilation with "Illegal parameter number" errors
-    - ONLY change the actual text words within qualifying bullet point content - identify bullets by their structure (may use \\item, \\resumeItem, or any custom command)
-    - Preserve ALL LaTeX environments, formatting, preamble, custom commands, and structure exactly as-is
-    - REMEMBER: Different resumes use different bullet commands - work with whatever command is used, but ONLY edit the text content inside it
+    GOOD EXAMPLE:
+    - "\\resumeItem{Built a comprehensive database system for...}" -> "\\resumeItem{Built a database system for...}"
+    
+    BAD EXAMPLES (FORBIDDEN):
+    - Combining two bullets into one
+    - "\\item{Built}" -> "Built" (removed LaTeX command)
     """
     
     resume_latex: str = dspy.InputField(desc="Resume in LaTeX format")
     target_pages: int = dspy.InputField(desc="Target number of pages")
     current_pages: int = dspy.InputField(desc="Current page count")
-    qualifying_bullets: str = dspy.InputField(desc="Detailed breakdown of qualifying bullets with their ACTUAL rendered line breaks (showing where LaTeX wraps text). Each bullet shows its multi-line structure with line-by-line text, word counts, and removal targets.")
-    optimized_latex: str = dspy.OutputField(desc="Resume with qualifying bullets condensed to n-1 lines. Only qualifying bullets modified. ONLY text content within qualifying bullet points modified (regardless of whether bullets use \\item, \\resumeItem, or any custom command). ALL LaTeX structure, commands, and formatting preserved exactly. Bullet structure preserved - do not combine bullets.")
+    qualifying_bullets: str = dspy.InputField(desc="Bullets to condense with line-by-line breakdown and word removal targets")
+    optimized_latex: str = dspy.OutputField(desc="Resume with qualifying bullets condensed. All LaTeX, \\vspace, \\hspace, blank lines, and whitespace preserved exactly.")
 
 
 # =============================================================================
@@ -1045,7 +934,6 @@ class ResumeOptimizerPipeline(dspy.Module):
         
         # Phase 1: ATS Keyword Optimization
         try:
-            
             ats_result = self.ats_optimizer(
                 resume_latex=resume_latex,
                 job_description=job_description,

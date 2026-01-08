@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 from tailor_tom.latex_compiler import compile_latex
+from tailor_tom.optimizer import _fix_latex_issues
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)  # Only log errors for API endpoints
@@ -30,7 +31,11 @@ async def validate_latex_compile(request: ValidateRequest):
     without requiring a job ID.
     """
     try:
-        compile_result = compile_latex(request.latex)
+        # Fix common LaTeX issues (like missing units) before validation
+        # This ensures user LaTeX that works on Overleaf also works here
+        fixed_latex = _fix_latex_issues(request.latex)
+        
+        compile_result = compile_latex(fixed_latex)
         
         if not compile_result.success:
             error_msg = compile_result.error_message or "LaTeX compilation failed"
@@ -59,7 +64,10 @@ async def compile_latex_to_pdf(request: CompileRequest):
     or when the job no longer exists in the backend.
     """
     try:
-        compile_result = compile_latex(request.latex)
+        # Fix common LaTeX issues before compilation
+        fixed_latex = _fix_latex_issues(request.latex)
+        
+        compile_result = compile_latex(fixed_latex)
         
         if not compile_result.success:
             error_msg = compile_result.error_message or "LaTeX compilation failed"
