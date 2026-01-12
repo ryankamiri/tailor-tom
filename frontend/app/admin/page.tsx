@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { listAdminResumes, downloadResume, deleteResume } from '@/lib/api';
-import { getCachedAdminResumes, saveCachedAdminResumes, CachedResume } from '@/lib/storage';
+import { getCachedAdminResumes, saveCachedAdminResumes, CachedResume, canCreateJobWithinDailyLimit, clearDailyJobCount } from '@/lib/storage';
 import { ADMIN_SESSION_TIMEOUT_MS } from '@/lib/constants';
 import { toast } from 'sonner';
 
@@ -47,6 +47,7 @@ export default function AdminPage() {
   const [isLoading, setIsLoading] = useState(true); // Start with loading=true to prevent flash
   const [resumes, setResumes] = useState<Resume[]>([]);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [dailyLimit, setDailyLimit] = useState(canCreateJobWithinDailyLimit());
 
   const updateAdminSessionTimestamp = useCallback(() => {
     sessionStorage.setItem('admin_session_timestamp', Date.now().toString());
@@ -413,6 +414,16 @@ export default function AdminPage() {
     }
   };
 
+  const handleResetDailyLimit = () => {
+    if (!confirm('Reset your daily job count? This will allow you to create more jobs today.')) {
+      return;
+    }
+    
+    clearDailyJobCount();
+    setDailyLimit(canCreateJobWithinDailyLimit());
+    toast.success('Daily job count reset successfully');
+  };
+
   const formatDate = (dateString: string) => {
     try {
       const date = new Date(dateString);
@@ -502,6 +513,46 @@ export default function AdminPage() {
             </Button>
           </div>
         </div>
+
+        {/* Daily Job Limit Management Card */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Daily Job Limit (Your Account)</CardTitle>
+            <CardDescription>
+              Manage your personal daily job limit. This only affects your browser.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">
+                  Completed today: {dailyLimit.completedToday} / {dailyLimit.limit}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Pending/Processing: {dailyLimit.pendingAndProcessing}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Total used: {dailyLimit.completedToday + dailyLimit.pendingAndProcessing} / {dailyLimit.limit}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Remaining: {dailyLimit.remaining}
+                </p>
+              </div>
+              <Button 
+                onClick={handleResetDailyLimit}
+                variant="outline"
+                size="sm"
+              >
+                Reset Daily Count
+              </Button>
+            </div>
+            {!dailyLimit.canCreate && (
+              <p className="text-sm text-amber-600">
+                Daily limit reached. Click &quot;Reset Daily Count&quot; to bypass the limit for today.
+              </p>
+            )}
+          </CardContent>
+        </Card>
 
         {resumes.length === 0 ? (
           <Card>

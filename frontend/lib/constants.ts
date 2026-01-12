@@ -5,6 +5,7 @@ export const STORAGE_PREFIX = 'tailortom:';
 export const MAX_JOBS = 50;
 export const JOB_STORAGE_KEY = `${STORAGE_PREFIX}jobs`;
 export const JOB_MAX_AGE_DAYS = 7;
+export const DAILY_JOB_LIMIT = 6; // Max completed jobs per day
 
 export const STATUS_COLORS = {
   pending: 'bg-amber-100 text-amber-800 border-amber-200',

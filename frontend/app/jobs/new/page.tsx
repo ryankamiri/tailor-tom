@@ -4,15 +4,19 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { JobForm } from '@/components/jobs/job-form';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { createOptimizationJob } from '@/lib/api';
-import { getSettings, getResumeLatex, saveJob, canCreateNewJob, StoredJob } from '@/lib/storage';
+import { getSettings, getResumeLatex, saveJob, canCreateNewJob, StoredJob, canCreateJobWithinDailyLimit } from '@/lib/storage';
 import { requestNotificationPermission } from '@/lib/notifications';
 import { toast } from 'sonner';
+import { DailyLimitBadge } from '@/components/jobs/daily-limit-badge';
+import { AlertCircle } from 'lucide-react';
 
 export default function NewJobPage() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dailyLimit = canCreateJobWithinDailyLimit();
 
   const handleSubmit = async (companyName: string, jobDescription: string) => {
     setIsLoading(true);
@@ -89,12 +93,25 @@ export default function NewJobPage() {
   return (
     <div className="container mx-auto py-8 max-w-4xl">
       <div className="space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold">New Optimization Job</h1>
-          <p className="text-muted-foreground mt-2">
-            Paste a job description to optimize your resume for ATS compatibility
-          </p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold">New Optimization Job</h1>
+            <p className="text-muted-foreground mt-2">
+              Paste a job description to optimize your resume for ATS compatibility
+            </p>
+          </div>
+          <DailyLimitBadge />
         </div>
+
+        {!dailyLimit.canCreate && (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Daily Limit Reached</AlertTitle>
+            <AlertDescription>
+              {dailyLimit.reason} The limit resets at midnight.
+            </AlertDescription>
+          </Alert>
+        )}
 
         <Card>
           <CardHeader>
@@ -104,7 +121,12 @@ export default function NewJobPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <JobForm onSubmit={handleSubmit} isLoading={isLoading} error={error} />
+            <JobForm 
+              onSubmit={handleSubmit} 
+              isLoading={isLoading} 
+              error={error}
+              disabled={!dailyLimit.canCreate}
+            />
           </CardContent>
         </Card>
       </div>

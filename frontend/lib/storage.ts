@@ -1,6 +1,6 @@
 /** localStorage helpers for TailorTom. */
 
-import { STORAGE_PREFIX, MAX_JOBS, JOB_STORAGE_KEY, JOB_MAX_AGE_DAYS, ADMIN_RESUMES_STORAGE_KEY } from './constants';
+import { STORAGE_PREFIX, MAX_JOBS, JOB_STORAGE_KEY, JOB_MAX_AGE_DAYS, ADMIN_RESUMES_STORAGE_KEY, DAILY_JOB_LIMIT } from './constants';
 
 export interface StoredJob {
   jobId: string;
@@ -244,12 +244,158 @@ export function getOptimizedLatex(jobId: string): string | null {
 }
 
 /**
+ * Get count of completed jobs for today (current local timezone).
+ * Only counts jobs with status === 'completed' and completedAt set.
+ * Respects admin reset timestamp if set for today.
+ * 
+ * Timezone handling: Uses current local timezone, so if user travels to a different
+ * timezone, "today" is recalculated based on their current location.
+ */
+function getTodayCompletedJobs(): number {
+  if (typeof window === 'undefined') return 0;
+  
+  // Check if daily count was reset today (in current local timezone)
+  const resetKey = `${STORAGE_PREFIX}daily_job_reset`;
+  const resetTimestamp = localStorage.getItem(resetKey);
+  if (resetTimestamp) {
+    // Get reset date in current local timezone
+    const resetDate = new Date(parseInt(resetTimestamp, 10));
+    resetDate.setHours(0, 0, 0, 0);
+    
+    // Get today in current local timezone
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // If reset was today (in current timezone), return 0 (bypass active)
+    if (resetDate.getTime() === today.getTime()) {
+      return 0;
+    }
+  }
+  
+  const jobs = getStoredJobs();
+  // Get today in current local timezone (automatically adjusts if user changed timezones)
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  return jobs.filter(job => {
+    if (job.status !== 'completed') return false;
+    if (!job.completedAt) return false;
+    
+    // Parse completedAt (ISO string) and convert to current local timezone
+    const completedDate = new Date(job.completedAt);
+    // Set to midnight in current local timezone for comparison
+    completedDate.setHours(0, 0, 0, 0);
+    
+    // Compare dates in current local timezone
+    return completedDate.getTime() === today.getTime();
+  }).length;
+}
+
+/**
+ * Get count of pending and processing jobs.
+ */
+function getPendingAndProcessingJobs(): number {
+  if (typeof window === 'undefined') return 0;
+  
+  const jobs = getStoredJobs();
+  return jobs.filter(
+    (j) => j.status === 'pending' || j.status === 'processing'
+  ).length;
+}
+
+/**
+ * Check if user can create a new job based on daily limit.
+ * Returns detailed information about remaining jobs.
+ * 
+ * Edge case handling:
+ * - Accounts for pending/processing jobs: total (completed + pending + processing) <= limit
+ * - This prevents users from queuing 6 jobs, then completing them all to hit the limit
+ * - If user has 3 completed and 2 pending, they can only create 1 more (3+2+1=6)
+ */
+export function canCreateJobWithinDailyLimit(): { 
+  canCreate: boolean; 
+  reason?: string;
+  completedToday: number;
+  pendingAndProcessing: number;
+  limit: number;
+  remaining: number;
+} {
+  const completedToday = getTodayCompletedJobs();
+  const pendingAndProcessing = getPendingAndProcessingJobs();
+  const limit = DAILY_JOB_LIMIT;
+  const totalJobs = completedToday + pendingAndProcessing;
+  const remaining = Math.max(0, limit - totalJobs);
+  
+  // Check if total jobs (completed + pending + processing) exceeds limit
+  if (totalJobs >= limit) {
+    if (completedToday >= limit) {
+      // All limit used by completed jobs
+      return {
+        canCreate: false,
+        reason: `Daily limit reached. You've completed ${completedToday} jobs today (limit: ${limit}). Please try again tomorrow.`,
+        completedToday,
+        pendingAndProcessing,
+        limit,
+        remaining: 0,
+      };
+    } else {
+      // Some limit used by pending/processing jobs
+      return {
+        canCreate: false,
+        reason: `Daily limit reached. You have ${completedToday} completed and ${pendingAndProcessing} pending/processing jobs (limit: ${limit}). Please wait for some jobs to complete.`,
+        completedToday,
+        pendingAndProcessing,
+        limit,
+        remaining: 0,
+      };
+    }
+  }
+  
+  return {
+    canCreate: true,
+    completedToday,
+    pendingAndProcessing,
+    limit,
+    remaining,
+  };
+}
+
+/**
+ * Clear daily job count for admin bypass.
+ * Stores a reset timestamp in localStorage that makes getTodayCompletedJobs()
+ * return 0 for the current day (in current local timezone), effectively resetting the count.
+ * 
+ * Timezone handling: Uses current local timezone, so reset applies to "today" in
+ * the user's current location.
+ */
+export function clearDailyJobCount(): void {
+  if (typeof window === 'undefined') return;
+  
+  // Get today in current local timezone (automatically adjusts if user changed timezones)
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  // Store reset timestamp - when getTodayCompletedJobs checks this and
+  // sees it's from today (in current timezone), it will return 0 regardless of actual completed jobs
+  const resetKey = `${STORAGE_PREFIX}daily_job_reset`;
+  localStorage.setItem(resetKey, today.getTime().toString());
+}
+
+/**
  * Check if we can create a new job.
  */
 export function canCreateNewJob(): { canCreate: boolean; reason?: string } {
-  const jobs = getStoredJobs();
+  // Check daily limit first
+  const dailyLimitCheck = canCreateJobWithinDailyLimit();
+  if (!dailyLimitCheck.canCreate) {
+    return {
+      canCreate: false,
+      reason: dailyLimitCheck.reason,
+    };
+  }
   
-  // Count pending/processing jobs
+  // Then check active jobs (existing logic)
+  const jobs = getStoredJobs();
   const activeJobs = jobs.filter(
     (j) => j.status === 'pending' || j.status === 'processing'
   );

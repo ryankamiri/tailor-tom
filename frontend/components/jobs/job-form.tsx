@@ -11,9 +11,10 @@ export interface JobFormProps {
   onSubmit: (companyName: string, jobDescription: string) => void;
   isLoading?: boolean;
   error?: string | null;
+  disabled?: boolean;
 }
 
-export function JobForm({ onSubmit, isLoading = false, error }: JobFormProps) {
+export function JobForm({ onSubmit, isLoading = false, error, disabled = false }: JobFormProps) {
   const [companyName, setCompanyName] = useState('');
   const [jobDescription, setJobDescription] = useState('');
 
@@ -34,6 +35,7 @@ export function JobForm({ onSubmit, isLoading = false, error }: JobFormProps) {
           value={companyName}
           onChange={(e) => setCompanyName(e.target.value)}
           required
+          disabled={disabled}
         />
         <p className="text-sm text-muted-foreground">
           Enter the company name for this job application
@@ -50,6 +52,7 @@ export function JobForm({ onSubmit, isLoading = false, error }: JobFormProps) {
           rows={15}
           className="font-mono text-sm resize-none overflow-y-auto"
           style={{ maxHeight: '500px' }}
+          disabled={disabled}
         />
         <p className="text-sm text-muted-foreground">
           Minimum 50 characters required. Paste the full job description for best results.
@@ -64,7 +67,7 @@ export function JobForm({ onSubmit, isLoading = false, error }: JobFormProps) {
 
       <Button
         type="submit"
-        disabled={isLoading || !companyName.trim() || jobDescription.trim().length < 50}
+        disabled={isLoading || disabled || !companyName.trim() || jobDescription.trim().length < 50}
         className="w-full"
       >
         {isLoading ? 'Processing...' : 'Optimize Resume'}

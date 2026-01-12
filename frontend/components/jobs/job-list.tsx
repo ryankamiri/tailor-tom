@@ -3,10 +3,11 @@
 import { useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { StoredJob } from '@/lib/storage';
+import { StoredJob, canCreateJobWithinDailyLimit } from '@/lib/storage';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
 import { Plus } from 'lucide-react';
+import { DailyLimitBadge } from './daily-limit-badge';
 
 // Dynamically import JobCard with SSR disabled to avoid hydration issues
 const JobCard = dynamic(() => import('./job-card').then(mod => ({ default: mod.JobCard })), {
@@ -37,11 +38,17 @@ export function JobList({ jobs, onJobsChange }: JobListProps) {
   const completedCount = jobs.filter((j) => j.status === 'completed').length;
   const failedCount = jobs.filter((j) => j.status === 'failed').length;
 
+  const dailyLimit = canCreateJobWithinDailyLimit();
+  const canCreateNew = dailyLimit.canCreate;
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold">Your Jobs</h2>
-        <Button asChild>
+        <div className="flex items-center gap-4">
+          <h2 className="text-2xl font-bold">Your Jobs</h2>
+          <DailyLimitBadge />
+        </div>
+        <Button asChild disabled={!canCreateNew}>
           <Link href="/jobs/new">
             <Plus className="mr-2 h-4 w-4" />
             New Job
