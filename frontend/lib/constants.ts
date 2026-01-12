@@ -7,6 +7,10 @@ export const JOB_STORAGE_KEY = `${STORAGE_PREFIX}jobs`;
 export const JOB_MAX_AGE_DAYS = 7;
 export const DAILY_JOB_LIMIT = 6; // Max completed jobs per day
 
+// Bullet lines configuration
+export const MIN_BULLET_LINES = 1;
+export const MAX_BULLET_LINES = 5;
+
 export const STATUS_COLORS = {
   pending: 'bg-amber-100 text-amber-800 border-amber-200',
   processing: 'bg-blue-100 text-blue-800 border-blue-200',

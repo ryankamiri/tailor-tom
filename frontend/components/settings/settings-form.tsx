@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { LatexEditor } from '@/components/editor/latex-editor';
 import { getSettings, saveSettings, getResumeLatex, saveResumeLatex, getUserId, UserSettings } from '@/lib/storage';
 import { validateLatex, saveResumeToBackend } from '@/lib/api';
+import { MIN_BULLET_LINES, MAX_BULLET_LINES } from '@/lib/constants';
 import { toast } from 'sonner';
 
 export function SettingsForm() {
@@ -203,7 +204,7 @@ export function SettingsForm() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {[1, 2, 3].map((n) => (
+                  {Array.from({ length: MAX_BULLET_LINES - MIN_BULLET_LINES + 1 }, (_, i) => i + MIN_BULLET_LINES).map((n) => (
                     <SelectItem key={n} value={n.toString()}>
                       {n}
                     </SelectItem>
