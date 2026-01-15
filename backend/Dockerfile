@@ -17,13 +17,12 @@ RUN sed -i 's/main/main contrib non-free/g' /etc/apt/sources.list.d/debian.sourc
     fonts-noto \
     fonts-noto-core \
     fonts-noto-extra \
-    wget \
-    cabextract \
-    xfonts-utils \
-    && echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections \
-    && apt-get install -y ttf-mscorefonts-installer \
-    && rm -rf /var/lib/apt/lists/* \
-    && fc-cache -fv
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy Microsoft Core Fonts (pre-downloaded to avoid 15+ minute downloads during build)
+# This layer will be cached unless fonts/ directory changes
+COPY backend/fonts/ /usr/share/fonts/truetype/msttcorefonts/
+RUN fc-cache -fv
 
 WORKDIR /app
 

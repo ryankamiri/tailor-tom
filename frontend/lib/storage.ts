@@ -199,6 +199,8 @@ export function updateJobStatus(
       jobs[jobIndex].errorMessage = errorMessage;
     }
     localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(jobs));
+    // Dispatch custom event to notify components of localStorage change (for same-tab updates)
+    window.dispatchEvent(new Event('localStorageChange'));
   }
 }
 
@@ -277,18 +279,33 @@ function getTodayCompletedJobs(): number {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   
-  return jobs.filter(job => {
+  // Filter to only completed jobs with completedAt set, and count those completed today
+  const completedToday = jobs.filter(job => {
+    // Only count completed jobs
     if (job.status !== 'completed') return false;
+    // Must have completedAt timestamp
     if (!job.completedAt) return false;
     
-    // Parse completedAt (ISO string) and convert to current local timezone
-    const completedDate = new Date(job.completedAt);
-    // Set to midnight in current local timezone for comparison
-    completedDate.setHours(0, 0, 0, 0);
-    
-    // Compare dates in current local timezone
-    return completedDate.getTime() === today.getTime();
-  }).length;
+    try {
+      // Parse completedAt (ISO string) and convert to current local timezone
+      const completedDate = new Date(job.completedAt);
+      // Validate the date was parsed correctly
+      if (isNaN(completedDate.getTime())) {
+        console.warn(`Invalid completedAt date for job ${job.jobId}: ${job.completedAt}`);
+        return false;
+      }
+      // Set to midnight in current local timezone for comparison
+      completedDate.setHours(0, 0, 0, 0);
+      
+      // Compare dates in current local timezone
+      return completedDate.getTime() === today.getTime();
+    } catch (error) {
+      console.warn(`Error parsing completedAt for job ${job.jobId}:`, error);
+      return false;
+    }
+  });
+  
+  return completedToday.length;
 }
 
 /**
@@ -448,6 +465,9 @@ export function deleteStoredJob(jobId: string): void {
   
   if (filtered.length !== jobs.length) {
     localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(filtered));
+    // Dispatch custom event to notify components of localStorage change (for same-tab updates)
+    // The 'storage' event only fires for cross-tab changes, so we need a custom event
+    window.dispatchEvent(new Event('localStorageChange'));
   }
 }
 

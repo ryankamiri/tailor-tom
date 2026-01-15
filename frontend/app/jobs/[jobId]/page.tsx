@@ -5,13 +5,14 @@ import { useParams, useRouter } from 'next/navigation';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import { getJobStatus, getJobLatex, JobStatus, deleteJob } from '@/lib/api';
+import { getJobStatus, getJobLatex, JobStatus, deleteJob, compileLatexToPdf } from '@/lib/api';
 import { updateJobStatus, storeOptimizedLatex, getOptimizedLatex, getStoredJob, getJobFilename } from '@/lib/storage';
 import { showJobCompleteNotification, showJobFailedNotification, isTabFocused } from '@/lib/notifications';
 import { JobStatusBadge } from '@/components/jobs/job-status-badge';
 import { JobStatusView } from '@/components/jobs/job-status-view';
 import { JobResultsView } from '@/components/jobs/job-results-view';
 import { toast } from 'sonner';
+import { Download } from 'lucide-react';
 
 export default function JobDetailsPage() {
   const params = useParams();
@@ -22,6 +23,7 @@ export default function JobDetailsPage() {
   const [originalLatex, setOriginalLatex] = useState<string>('');
   const [optimizedLatex, setOptimizedLatex] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const loadJobResults = useCallback(async (status: JobStatus) => {
     try {
@@ -305,6 +307,36 @@ export default function JobDetailsPage() {
     );
   }
 
+  const handleDownload = async () => {
+    if (!optimizedLatex) {
+      toast.error('No optimized resume available to download');
+      return;
+    }
+
+    setIsDownloading(true);
+    try {
+      const downloadFilename = jobStatus.result?.filename || 'optimized_resume.pdf';
+      const pdfBlob = await compileLatexToPdf(optimizedLatex, downloadFilename);
+
+      // Create download link
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = downloadFilename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast.success('PDF downloaded successfully!');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to compile PDF';
+      toast.error(errorMessage);
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
   return (
     <div className="container mx-auto py-8 max-w-6xl space-y-6">
       <div className="flex items-center justify-between">
@@ -314,7 +346,20 @@ export default function JobDetailsPage() {
             {jobStatus.company_name || 'Optimization Job'}
           </p>
         </div>
-        <JobStatusBadge status={jobStatus.status} />
+        <div className="flex items-center gap-3">
+          {optimizedLatex && (
+            <Button 
+              onClick={handleDownload} 
+              disabled={isDownloading}
+              variant="default"
+              className="gap-2"
+            >
+              <Download className="h-4 w-4" />
+              {isDownloading ? 'Compiling...' : 'Download Optimized Resume'}
+            </Button>
+          )}
+          <JobStatusBadge status={jobStatus.status} />
+        </div>
       </div>
 
       <JobStatusView status={jobStatus.status} errorMessage={jobStatus.error_message} />
