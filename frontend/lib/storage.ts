@@ -1,6 +1,6 @@
 /** localStorage helpers for TailorTom. */
 
-import { STORAGE_PREFIX, MAX_JOBS, JOB_STORAGE_KEY, JOB_MAX_AGE_DAYS, ADMIN_RESUMES_STORAGE_KEY, DAILY_JOB_LIMIT } from './constants';
+import { STORAGE_PREFIX, MAX_JOBS, JOB_STORAGE_KEY, JOB_MAX_AGE_DAYS, ADMIN_RESUMES_STORAGE_KEY, DAILY_JOB_LIMIT, DAILY_JOB_COMPLETIONS_KEY } from './constants';
 
 export interface StoredJob {
   jobId: string;
@@ -174,6 +174,7 @@ export function saveJob(job: StoredJob): void {
 
 /**
  * Update a job's status.
+ * When a job transitions from pending/processing to completed, increments the daily completions counter (failed does not count).
  */
 export function updateJobStatus(
   jobId: string,
@@ -183,11 +184,12 @@ export function updateJobStatus(
   errorMessage?: string | null
 ): void {
   if (typeof window === 'undefined') return;
-  
+
   const jobs = getStoredJobs();
   const jobIndex = jobs.findIndex((j) => j.jobId === jobId);
-  
+
   if (jobIndex !== -1) {
+    const previousStatus = jobs[jobIndex].status;
     jobs[jobIndex].status = status;
     if (companyName !== undefined) {
       jobs[jobIndex].companyName = companyName;
@@ -199,6 +201,13 @@ export function updateJobStatus(
       jobs[jobIndex].errorMessage = errorMessage;
     }
     localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(jobs));
+    // Increment daily completions only when transitioning to completed (not failed)
+    if (
+      (previousStatus === 'pending' || previousStatus === 'processing') &&
+      status === 'completed'
+    ) {
+      incrementDailyCompletions();
+    }
     // Dispatch custom event to notify components of localStorage change (for same-tab updates)
     window.dispatchEvent(new Event('localStorageChange'));
   }
@@ -246,66 +255,83 @@ export function getOptimizedLatex(jobId: string): string | null {
 }
 
 /**
- * Get count of completed jobs for today (current local timezone).
- * Only counts jobs with status === 'completed' and completedAt set.
- * Respects admin reset timestamp if set for today.
- * 
- * Timezone handling: Uses current local timezone, so if user travels to a different
- * timezone, "today" is recalculated based on their current location.
+ * Return today's date in user's local timezone as YYYY-MM-DD.
  */
-function getTodayCompletedJobs(): number {
+function getTodayDateString(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+interface DailyCompletionsStore {
+  date: string;
+  count: number;
+}
+
+/**
+ * Read daily completions count for today. Returns 0 if key missing, invalid, or date is not today.
+ * Respects admin reset: if tailortom:daily_job_reset is set for today, returns 0.
+ */
+function getDailyCompletionsCount(): number {
   if (typeof window === 'undefined') return 0;
-  
-  // Check if daily count was reset today (in current local timezone)
+
+  // Admin reset for today: return 0 (bypass active)
   const resetKey = `${STORAGE_PREFIX}daily_job_reset`;
   const resetTimestamp = localStorage.getItem(resetKey);
   if (resetTimestamp) {
-    // Get reset date in current local timezone
     const resetDate = new Date(parseInt(resetTimestamp, 10));
     resetDate.setHours(0, 0, 0, 0);
-    
-    // Get today in current local timezone
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    // If reset was today (in current timezone), return 0 (bypass active)
-    if (resetDate.getTime() === today.getTime()) {
+    const todayDate = new Date();
+    todayDate.setHours(0, 0, 0, 0);
+    if (resetDate.getTime() === todayDate.getTime()) {
       return 0;
     }
   }
-  
-  const jobs = getStoredJobs();
-  // Get today in current local timezone (automatically adjusts if user changed timezones)
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  
-  // Filter to only completed jobs with completedAt set, and count those completed today
-  const completedToday = jobs.filter(job => {
-    // Only count completed jobs
-    if (job.status !== 'completed') return false;
-    // Must have completedAt timestamp
-    if (!job.completedAt) return false;
-    
-    try {
-      // Parse completedAt (ISO string) and convert to current local timezone
-      const completedDate = new Date(job.completedAt);
-      // Validate the date was parsed correctly
-      if (isNaN(completedDate.getTime())) {
-        console.warn(`Invalid completedAt date for job ${job.jobId}: ${job.completedAt}`);
-        return false;
+
+  const stored = localStorage.getItem(DAILY_JOB_COMPLETIONS_KEY);
+  if (!stored) return 0;
+
+  try {
+    const parsed = JSON.parse(stored) as DailyCompletionsStore;
+    if (typeof parsed?.date !== 'string' || typeof parsed?.count !== 'number') return 0;
+    const today = getTodayDateString();
+    if (parsed.date !== today) return 0;
+    return parsed.count;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Increment the daily completions counter for today. Called only when a job transitions to completed.
+ */
+function incrementDailyCompletions(): void {
+  if (typeof window === 'undefined') return;
+
+  const today = getTodayDateString();
+  const stored = localStorage.getItem(DAILY_JOB_COMPLETIONS_KEY);
+  let count = 0;
+  try {
+    if (stored) {
+      const parsed = JSON.parse(stored) as DailyCompletionsStore;
+      if (parsed?.date === today && typeof parsed?.count === 'number') {
+        count = parsed.count;
       }
-      // Set to midnight in current local timezone for comparison
-      completedDate.setHours(0, 0, 0, 0);
-      
-      // Compare dates in current local timezone
-      return completedDate.getTime() === today.getTime();
-    } catch (error) {
-      console.warn(`Error parsing completedAt for job ${job.jobId}:`, error);
-      return false;
     }
-  });
-  
-  return completedToday.length;
+  } catch {
+    // ignore invalid JSON
+  }
+  localStorage.setItem(DAILY_JOB_COMPLETIONS_KEY, JSON.stringify({ date: today, count: count + 1 }));
+}
+
+/**
+ * Get count of completed jobs for today (from dedicated counter).
+ * Only successful completions count; failed jobs do not. Respects admin reset.
+ */
+function getTodayCompletedJobs(): number {
+  return getDailyCompletionsCount();
 }
 
 /**

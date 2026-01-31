@@ -6,6 +6,7 @@ export const MAX_JOBS = 50;
 export const JOB_STORAGE_KEY = `${STORAGE_PREFIX}jobs`;
 export const JOB_MAX_AGE_DAYS = 7;
 export const DAILY_JOB_LIMIT = 6; // Max completed jobs per day
+export const DAILY_JOB_COMPLETIONS_KEY = `${STORAGE_PREFIX}daily_job_completions`;
 
 // Bullet lines configuration
 export const MIN_BULLET_LINES = 1;

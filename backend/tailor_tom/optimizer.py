@@ -1,8 +1,9 @@
 """DSPy-based resume optimization for ATS.
 
-This module implements a two-phase optimization pipeline:
-1. Phase 1: ATS keyword optimization (word-level changes, no content addition/removal)
-2. Phase 2: Page reduction (condensing qualifying bullets, content removal allowed)
+This module implements a unified length-preserving optimization pipeline:
+- Compiles first to get bullet metrics (line count, word count)
+- Uses search-and-replace approach with strict length validation
+- Failed replacements retry with ICL feedback up to max_iterations
 """
 
 import gc
@@ -10,22 +11,507 @@ import logging
 import os
 import re
 import sys
-from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from dataclasses import dataclass, field
+from typing import Optional, List, Tuple, Dict, Any
 
 import dspy
 import fitz  # PyMuPDF
+from pydantic import BaseModel, Field
 
 from tailor_tom.config import settings
 from tailor_tom.latex_compiler import compile_latex, CompileResult, validate_latex
-from tailor_tom.layout_analyzer import analyze_layout, check_quality, QualityResult, extract_line_metrics
+from tailor_tom.layout_analyzer import check_quality, QualityResult, extract_line_metrics, extract_items_from_latex
 from api.storage import update_job_status
 
 logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# Helper Functions
+# Data Models for Unified Optimizer
+# =============================================================================
+
+
+@dataclass
+class BulletConstraint:
+    """Constraint information for a single bullet point."""
+    bullet_id: int  # Sequential ID for tracking
+    section: str  # "Experience", "Projects", etc.
+    original_text: str  # Clean text content (no LaTeX commands)
+    latex_snippet: str  # Original LaTeX for this bullet (for replacement)
+    line_count: int  # Current lines in PDF (MUST preserve)
+    word_count: int  # Current words (target: within delta)
+    char_count: int  # Current characters (target: within delta)
+    
+    # Tracking for iterations
+    last_failure_reason: Optional[str] = None
+    attempts: int = 0
+
+
+class BulletReplacement(BaseModel):
+    """A single bullet optimization replacement from LLM."""
+    bullet_id: int = Field(description="Bullet ID from input")
+    replacement_latex: str = Field(description="Optimized LaTeX with formatting preserved")
+    keywords_integrated: List[str] = Field(description="Keywords from job description that were added")
+
+
+class OptimizeBulletsOutput(BaseModel):
+    """Output from bullet optimization LLM call."""
+    replacements: List[BulletReplacement] = Field(description="List of optimized bullets")
+
+
+# =============================================================================
+# DSPy Signature for Unified Optimizer
+# =============================================================================
+
+
+class OptimizeBullets(dspy.Signature):
+    """Replace words in resume bullets with ATS-friendly keywords from the job description.
+
+    LINE COUNT RULE (CRITICAL):
+    - Each bullet has a specified line count (e.g., "2 lines")
+    - Your replacement MUST render to the SAME number of lines
+    - If a bullet is 2 lines, your replacement must also be ~2 lines when rendered
+    - Making it longer (more lines) = REJECTED
+    - Making it shorter (fewer lines) = REJECTED
+    
+    REPLACEMENT STRATEGY:
+    - REPLACE generic words with job-relevant keywords
+    - "worked on" -> "developed", "helped" -> "contributed"
+    - "system" -> "microservices", "built" -> "engineered"
+    - Keep the same approximate length to preserve line count
+    
+    SEMANTIC RULES:
+    - Only insert keywords that make SENSE in context
+    - ML bullets get ML keywords, frontend bullets get frontend keywords
+    - Do NOT replace technical terms with unrelated keywords
+    - Preserve all facts, metrics, and achievements
+    
+    LATEX FORMATTING:
+    - Preserve all \\textbf{}, \\textit{}, \\href{} formatting
+    - Escape special characters: & -> \\&, % -> \\%, $ -> \\$
+    
+    OUTPUT:
+    - Return a replacement for EVERY bullet
+    - If no good substitution exists, return the ORIGINAL unchanged
+    - List which keywords you integrated
+    """
+    
+    job_description: str = dspy.InputField(desc="Job description with target keywords to integrate")
+    bullets: str = dspy.InputField(desc="Bullets with IDs, line counts, and LaTeX content")
+    replacements: List[BulletReplacement] = dspy.OutputField(
+        desc="Optimized bullets - each must preserve the original line count"
+    )
+
+
+# =============================================================================
+# Bullet Extraction and Formatting Helpers
+# =============================================================================
+
+
+def _extract_bullet_constraints(
+    pdf_bytes: bytes,
+    latex: str,
+) -> List[BulletConstraint]:
+    """Extract bullet constraints from compiled PDF and LaTeX source.
+    
+    Args:
+        pdf_bytes: Compiled PDF bytes
+        latex: Original LaTeX source
+        
+    Returns:
+        List of BulletConstraint objects with metrics for each bullet
+    """
+    # Get bullet metrics from PDF (line counts, positions)
+    bullet_metrics = extract_line_metrics(pdf_bytes, latex=latex)
+    bullets_data = bullet_metrics.get("bullets", [])
+    
+    # Get bullet LaTeX snippets
+    latex_items = extract_items_from_latex(latex)
+    
+    constraints = []
+    
+    for i, bullet in enumerate(bullets_data):
+        # Get text from PDF metrics
+        text_preview = bullet.get("text_preview", "")
+        lines_text = bullet.get("lines_text", [])
+        full_text = " ".join(lines_text) if lines_text else text_preview
+        
+        # Clean text for word/char counting
+        clean_text = full_text.strip()
+        
+        # Get line count from PDF
+        line_count = bullet.get("line_count", 1)
+        
+        # Calculate word and character counts
+        word_count = len(clean_text.split()) if clean_text else 0
+        char_count = len(clean_text) if clean_text else 0
+        
+        # Try to find matching LaTeX snippet
+        latex_snippet = ""
+        if i < len(latex_items):
+            latex_snippet = latex_items[i].get("latex", "")
+        
+        # Determine section (heuristic based on position or content)
+        # For now, default to "Experience" - could be enhanced to detect from LaTeX
+        section = _detect_section_for_bullet(latex, latex_snippet)
+        
+        constraints.append(BulletConstraint(
+            bullet_id=i + 1,  # 1-indexed for human readability
+            section=section,
+            original_text=clean_text,
+            latex_snippet=latex_snippet,
+            line_count=line_count,
+            word_count=word_count,
+            char_count=char_count,
+        ))
+    
+    return constraints
+
+
+# Content phrases that indicate an Education bullet (protect from editing)
+_EDUCATION_CONTENT_PHRASES = (
+    "gpa",
+    "grade point average",
+    "relevant coursework",
+    "coursework:",
+    "candidate for bachelor",
+    "candidate for master",
+    "candidate for b.s",
+    "candidate for m.s",
+    "candidate for b.a",
+    "candidate for m.a",
+    "bachelor of ",
+    "master of ",
+    "b.s. in ",
+    "m.s. in ",
+    "b.a. in ",
+    "m.a. in ",
+    "ph.d",
+    "phd ",
+    "expected graduation",
+    "graduated ",
+    "graduation:",
+    "dean's list",
+    "dean list",
+    "honor roll",
+    "cum laude",
+    "magna cum laude",
+    "summa cum laude",
+    "major in ",
+    "minor in ",
+    "concentration in ",
+)
+
+
+def _detect_section_for_bullet(latex: str, latex_snippet: str) -> str:
+    """Detect which section a bullet belongs to.
+    
+    Uses (1) bullet content heuristics for Education, then (2) preceding
+    LaTeX section markers.
+    
+    Args:
+        latex: Full LaTeX source
+        latex_snippet: The specific bullet's LaTeX
+        
+    Returns:
+        Section name (e.g., "Experience", "Projects", "Education", "Skills")
+    """
+    if not latex_snippet:
+        return "Unknown"
+    
+    # 1. Content-based: if bullet text clearly indicates Education, protect it
+    plain = _strip_latex_commands(latex_snippet).lower()
+    for phrase in _EDUCATION_CONTENT_PHRASES:
+        if phrase in plain:
+            return "Education"
+    
+    # 2. Position-based: find nearest section header before this bullet
+    pos = latex.find(latex_snippet)
+    if pos == -1:
+        return "Unknown"
+    
+    preceding = latex[:pos].lower()
+    
+    # Section header markers (reverse order of priority; last match wins)
+    section_markers = [
+        # Skills section - DO NOT EDIT
+        ("skills", "Skills"),
+        ("technical skills", "Skills"),
+        ("core competencies", "Skills"),
+        ("competencies", "Skills"),
+        # Education section - DO NOT EDIT
+        ("education", "Education"),
+        ("academic", "Education"),
+        ("academics", "Education"),
+        ("degree", "Education"),
+        ("coursework", "Education"),
+        ("certification", "Education"),
+        ("certifications", "Education"),
+        ("qualifications", "Education"),
+        # Research section - OK to edit
+        ("research", "Research"),
+        ("publications", "Research"),
+        ("papers", "Research"),
+        # Projects section - OK to edit
+        ("project", "Projects"),
+        ("portfolio", "Projects"),
+        ("hackathon", "Projects"),
+        # Experience section - OK to edit
+        ("experience", "Experience"),
+        ("employment", "Experience"),
+        ("work history", "Experience"),
+        ("work", "Experience"),
+        ("professional", "Experience"),
+        ("university", "Experience"),
+        ("college", "Experience"),
+        ("school", "Experience"),
+        ("training", "Experience"),
+    ]
+    
+    best_section = "Experience"
+    best_pos = -1
+    
+    for marker, section_name in section_markers:
+        pattern_pos = preceding.rfind(marker)
+        if pattern_pos > best_pos:
+            best_pos = pattern_pos
+            best_section = section_name
+    
+    return best_section
+
+
+def _format_bullets_for_llm(
+    bullets: List[BulletConstraint],
+    failed_feedback: Optional[Dict[int, str]] = None,
+) -> str:
+    """Format bullets for LLM consumption with LaTeX content and line count constraints.
+    
+    Args:
+        bullets: List of bullet constraints to optimize
+        failed_feedback: Optional dict of bullet_id -> failure reason for ICL
+        
+    Returns:
+        Formatted string for LLM input with LaTeX content
+    """
+    lines = []
+    
+    # ICL feedback for retries - line count failures
+    if failed_feedback:
+        lines.append("**REJECTED - Fix these line count issues:**")
+        for bullet_id, reason in failed_feedback.items():
+            lines.append(f"- B{bullet_id}: {reason}")
+        lines.append("")
+    
+    for bullet in bullets:
+        # Format: Show line count as the primary constraint
+        lines.append(f"**B{bullet.bullet_id}** [{bullet.section}] MUST stay {bullet.line_count} line{'s' if bullet.line_count != 1 else ''}")
+        lines.append(f"LaTeX: {bullet.latex_snippet}")
+        
+        if bullet.last_failure_reason:
+            lines.append(f"*REJECTED: {bullet.last_failure_reason}*")
+        
+        lines.append("")
+    
+    return "\n".join(lines)
+
+
+# =============================================================================
+# Replacement Validation and Application
+# =============================================================================
+
+
+def _strip_latex_commands(latex_text: str) -> str:
+    """Strip LaTeX formatting commands to get plain text for word/char counting.
+    
+    Removes:
+    - \\textbf{...}, \\textit{...}, \\emph{...} -> keeps content
+    - \\href{url}{text} -> keeps text only
+    - \\% -> %
+    - \\& -> &
+    - \\$ -> $
+    - Other backslash commands
+    
+    Args:
+        latex_text: LaTeX text with formatting commands
+        
+    Returns:
+        Plain text with commands stripped
+    """
+    text = latex_text
+    
+    # Replace escaped special characters
+    text = text.replace(r'\%', '%')
+    text = text.replace(r'\&', '&')
+    text = text.replace(r'\$', '$')
+    text = text.replace(r'\_', '_')
+    text = text.replace(r'\#', '#')
+    
+    # Remove \href{url}{text} -> keep just text
+    # Pattern: \href{...}{text} - we want to keep "text"
+    text = re.sub(r'\\href\{[^}]*\}\{([^}]*)\}', r'\1', text)
+    
+    # Remove formatting commands but keep content: \textbf{content} -> content
+    # Handle nested braces by doing multiple passes
+    for _ in range(3):  # Handle up to 3 levels of nesting
+        text = re.sub(r'\\(?:textbf|textit|emph|underline|textsc|textsf|texttt)\{([^{}]*)\}', r'\1', text)
+    
+    # Remove any remaining simple commands like \item, \par, etc.
+    text = re.sub(r'\\[a-zA-Z]+(?:\[[^\]]*\])?(?:\{[^}]*\})?', '', text)
+    
+    # Clean up multiple spaces
+    text = re.sub(r'\s+', ' ', text)
+    
+    return text.strip()
+
+
+def _validate_replacement(
+    original: BulletConstraint,
+    replacement_latex: str,
+    max_shrink_words: int = 3,
+    max_shrink_percent: float = 0.15,
+) -> Tuple[bool, str]:
+    """Validate that a LaTeX replacement meets strict length constraints.
+    
+    Strips LaTeX commands before counting words/characters to compare
+    against the original plain text metrics.
+    
+    STRICT MODE: 
+    - Replacements must be same length or SHORTER (never longer!)
+    - Being shorter is OK (up to max_shrink_words or max_shrink_percent)
+    
+    Args:
+        original: Original bullet constraint (with plain text metrics)
+        replacement_latex: Proposed replacement LaTeX from LLM
+        max_shrink_words: Max words allowed to be removed (default: 3)
+        max_shrink_percent: Max percentage shorter allowed (default: 15%)
+        
+    Returns:
+        Tuple of (is_valid, reason_if_invalid)
+    """
+    # Strip LaTeX commands to get plain text for counting
+    clean_replacement = _strip_latex_commands(replacement_latex)
+    
+    repl_words = len(clean_replacement.split()) if clean_replacement else 0
+    repl_chars = len(clean_replacement) if clean_replacement else 0
+    
+    # STRICT NO GROWTH CHECK - reject ANY increase in word count
+    if repl_words > original.word_count:
+        growth = repl_words - original.word_count
+        return False, f"TOO LONG: +{growth} words (orig {original.word_count}, got {repl_words}). Use SHORTER words."
+    
+    # STRICT NO GROWTH CHECK - reject ANY increase in character count
+    # Even +2-3 chars can cause line wrapping on tight bullets
+    if repl_chars > original.char_count:
+        growth = repl_chars - original.char_count
+        return False, f"TOO LONG: +{growth} chars (orig {original.char_count}, got {repl_chars}). Use SHORTER words."
+    
+    # Check if too SHORT (meaning too much content was removed)
+    word_shrink = original.word_count - repl_words
+    if word_shrink > max_shrink_words:
+        return False, f"Too much removed: -{word_shrink} words (orig {original.word_count}, got {repl_words})"
+    
+    # Check character shrinkage percentage
+    if original.char_count > 0:
+        char_shrink_percent = (original.char_count - repl_chars) / original.char_count
+        if char_shrink_percent > max_shrink_percent:
+            return False, f"Too much removed: -{char_shrink_percent:.0%} chars (orig {original.char_count}, got {repl_chars})"
+    
+    # Check for empty or trivial replacement
+    if repl_words < 2:
+        return False, f"Replacement too short: only {repl_words} words"
+    
+    return True, ""
+
+
+def _apply_replacement_to_latex(
+    latex: str,
+    original: BulletConstraint,
+    replacement_latex: str,
+) -> Tuple[str, bool, bool]:
+    """Apply a single LaTeX replacement to LaTeX source.
+    
+    Since the LLM now returns LaTeX directly (with formatting preserved),
+    this is a simple find-and-replace operation.
+    
+    Args:
+        latex: Current LaTeX source
+        original: Original bullet constraint (contains latex_snippet)
+        replacement_latex: New LaTeX content from LLM (with formatting)
+        
+    Returns:
+        Tuple of (modified_latex, success, was_unchanged)
+        - success: True if operation completed (even if no change was made)
+        - was_unchanged: True if LLM returned original (no substitution found)
+    """
+    if not original.latex_snippet:
+        logger.warning(f"Bullet {original.bullet_id}: No LaTeX snippet to replace")
+        return latex, False, False
+    
+    # Check if LLM returned the original unchanged (no substitution possible)
+    # Normalize whitespace for comparison
+    original_normalized = ' '.join(original.latex_snippet.split())
+    replacement_normalized = ' '.join(replacement_latex.split())
+    
+    if original_normalized == replacement_normalized:
+        # LLM couldn't find a valid substitution - accept as "no change needed"
+        logger.info(f"Bullet {original.bullet_id}: No substitution found (returned original)")
+        return latex, True, True  # Success, but unchanged
+    
+    # Find the original LaTeX snippet in the document
+    if original.latex_snippet not in latex:
+        # Try with normalized whitespace
+        logger.warning(f"Bullet {original.bullet_id}: LaTeX snippet not found in document (exact match)")
+        return latex, False, False
+    
+    # Direct replacement: old LaTeX snippet -> new LaTeX from LLM
+    new_latex = latex.replace(original.latex_snippet, replacement_latex, 1)
+    
+    if new_latex == latex:
+        logger.warning(f"Bullet {original.bullet_id}: Replacement had no effect (replace returned same)")
+        return latex, False, False
+    
+    return new_latex, True, False
+
+
+def _verify_line_counts(
+    original_constraints: List[BulletConstraint],
+    new_pdf_bytes: bytes,
+    new_latex: str,
+) -> Dict[int, Tuple[int, int]]:
+    """Verify that line counts are preserved after replacements.
+    
+    Args:
+        original_constraints: Original bullet constraints with line counts
+        new_pdf_bytes: PDF bytes after replacements
+        new_latex: LaTeX after replacements
+        
+    Returns:
+        Dict of bullet_id -> (original_lines, new_lines) for bullets that changed
+    """
+    # Get new bullet metrics
+    new_metrics = extract_line_metrics(new_pdf_bytes, latex=new_latex)
+    new_bullets = new_metrics.get("bullets", [])
+    
+    failures = {}
+    
+    for orig in original_constraints:
+        # Find corresponding bullet in new metrics (by index)
+        new_idx = orig.bullet_id - 1  # Convert to 0-indexed
+        
+        if new_idx < len(new_bullets):
+            new_line_count = new_bullets[new_idx].get("line_count", 0)
+            
+            if new_line_count != orig.line_count:
+                logger.info(
+                    f"Bullet {orig.bullet_id}: Line count changed from {orig.line_count} to {new_line_count}"
+                )
+                failures[orig.bullet_id] = (orig.line_count, new_line_count)
+    
+    return failures
+
+
+# =============================================================================
+# Legacy Helper Functions (kept for compatibility)
 # =============================================================================
 
 
@@ -571,146 +1057,6 @@ def _validate_section_preservation(optimized_latex: str, original_latex: str, se
     return True
 
 
-def _filter_qualifying_bullets(
-    layout_analysis: dict, 
-    current_pages: int, 
-    target_pages: int, 
-    max_bullet_lines: int
-) -> List[dict]:
-    """Filter bullets that meet Phase 2 criteria for condensation.
-    
-    Bullets qualify if:
-    1. They are too long (> max_bullet_lines), OR
-    2. Resume is over target pages AND bullet is multi-line (2+), OR
-    3. Resume is at/below target pages AND bullet is multi-line (2+) with low utilization (<15%)
-    
-    Args:
-        layout_analysis: Dictionary containing bullets data.
-        current_pages: Current page count.
-        target_pages: Target page count.
-        max_bullet_lines: Maximum allowed lines per bullet.
-        
-    Returns:
-        List of bullet dictionaries that meet the criteria.
-    """
-    bullets = layout_analysis.get("bullets", [])
-    
-    qualifying = []
-    over_target = current_pages > target_pages
-    
-    for bullet in bullets:
-        line_count = bullet.get("line_count", 0)
-        utilization = bullet.get("last_line_utilization_percent", 100)
-        
-        # Priority 1: Bullets that are too long (> max_bullet_lines) - always qualify
-        if line_count > max_bullet_lines:
-            qualifying.append(bullet)
-        # Priority 2: If over target pages, condense ALL multi-line bullets (more aggressive)
-        elif over_target and line_count >= 2:
-            qualifying.append(bullet)
-        # Priority 3: Normal criteria: multi-line (2+) AND low utilization (<15%)
-        elif line_count >= 2 and (utilization is None or utilization < 15):
-            qualifying.append(bullet)
-    
-    return qualifying
-
-
-def _format_qualifying_bullets(
-    bullets: List[dict], 
-    current_pages: int, 
-    target_pages: int, 
-    max_bullet_lines: int
-) -> str:
-    """Format qualifying bullets for LLM consumption with actual line-by-line breakdown.
-    
-    Shows bullets with their actual rendered line breaks (where LaTeX automatically wraps)
-    so the LLM can see the multi-line structure clearly.
-    
-    Args:
-        bullets: List of bullet dictionaries from layout analysis (must have 'lines_text' field).
-        current_pages: Current page count.
-        target_pages: Target page count.
-        max_bullet_lines: Maximum allowed lines per bullet.
-        
-    Returns:
-        Formatted string showing each bullet with its line-by-line breakdown and context.
-    """
-    lines = []
-    over_target = current_pages > target_pages
-    
-    lines.append("=" * 80)
-    lines.append("QUALIFYING BULLETS FOR CONDENSATION")
-    lines.append("=" * 80)
-    
-    # Identify why bullets qualify
-    long_bullets = [b for b in bullets if b.get("line_count", 0) > max_bullet_lines]
-    if long_bullets:
-        lines.append(f"These bullets are TOO LONG (> {max_bullet_lines} lines) and must be condensed.")
-    if over_target:
-        lines.append(f"Resume is {current_pages} pages (target: {target_pages}). Multi-line bullets must be condensed to reduce page count.")
-    if not long_bullets and not over_target:
-        lines.append("These bullets are multi-line (2+ lines) with low last-line utilization (<15%).")
-    
-    lines.append("You must condense these bullets to n-1 lines by removing words/content.")
-    lines.append("")
-    lines.append("IMPORTANT: Each bullet below shows its ACTUAL rendered line breaks.")
-    lines.append("LaTeX automatically wraps text at word boundaries - these are the actual line breaks in the PDF.")
-    lines.append("To reduce line count, you must remove enough words so the text no longer wraps to the last line.")
-    lines.append("")
-    
-    for i, bullet in enumerate(bullets, 1):
-        text_preview = bullet.get("text_preview", "")
-        line_count = bullet.get("line_count", 0)
-        utilization = bullet.get("last_line_utilization_percent", 0)
-        target_lines = max(1, line_count - 1)
-        
-        # Estimate word count target based on line count
-        # Rough estimate: ~15-20 words per line for typical resume bullets
-        # To reduce from n lines to n-1, need to remove approximately 15-25 words
-        if line_count == 2:
-            word_target = "15-20 words"
-        elif line_count == 3:
-            word_target = "20-30 words"
-        else:
-            word_target = f"{15 * (line_count - 1)}-{25 * (line_count - 1)} words"
-        
-        lines.append(f"--- Bullet {i} ({line_count} lines -> target {target_lines} line(s), utilization: {utilization:.1f}%) ---")
-        lines.append(f"TARGET: Remove approximately {word_target} to reduce line count")
-        lines.append("")
-        
-        # Show line-by-line breakdown with actual rendered lines
-        lines_text = bullet.get("lines_text", [])
-        if lines_text and len(lines_text) > 1:
-            lines.append("ACTUAL RENDERED LINE BREAKDOWN (this is how it appears in the PDF):")
-            for line_idx, line_text in enumerate(lines_text, 1):
-                word_count = len(line_text.split())
-                # Show full line text (not truncated) so LLM can see exactly where breaks happen
-                lines.append(f"  Line {line_idx} ({word_count} words): {line_text}")
-            
-            # Also show the full text as it would appear in LaTeX (for context)
-            latex_source = bullet.get("latex_source", "")
-            if latex_source:
-                lines.append("")
-                lines.append("LaTeX source context (for reference when editing):")
-                # Truncate if very long, but show enough to see the structure
-                if len(latex_source) > 200:
-                    lines.append(f"  {latex_source[:200]}...")
-                else:
-                    lines.append(f"  {latex_source}")
-        else:
-            # Fallback: show text preview if lines_text not available
-            lines.append("Full text:")
-            lines.append(f"  {text_preview}")
-        
-        lines.append("")
-        lines.append(f"ACTION REQUIRED: Remove {word_target} to reduce this bullet from {line_count} lines to {target_lines} line(s).")
-        lines.append("Focus on the last line(s) - removing words there will most effectively reduce line count.")
-        lines.append("")
-        lines.append("")
-    
-    return "\n".join(lines)
-
-
 def _extract_name_from_latex(latex: str) -> Tuple[str, str]:
     """Extract first and last name from LaTeX resume.
     
@@ -782,75 +1128,6 @@ def _generate_output_filename(resume_latex: str, company_name: str) -> str:
 
 
 # =============================================================================
-# DSPy Signatures
-# =============================================================================
-
-
-class OptimizeATSKeywords(dspy.Signature):
-    r"""Integrate job-relevant keywords into resume bullet points through word-level replacements.
-
-    GOAL: Replace generic words with job-specific keywords while preserving all content and LaTeX structure exactly.
-    
-    RULES (priority order):
-    1. ONLY edit text inside bullet commands (\\item, \\resumeItem, or custom) - preserve ALL LaTeX exactly
-    2. Preserve ALL content - same achievements, metrics, experiences - only change wording
-    3. Keep word count approximately the same - if adding a word, remove another
-    4. Skip Skills and Education sections entirely
-    5. Use keyword VARIETY - max 2-3 uses per keyword; use synonyms (ML/machine learning, APIs/web services)
-    6. Preserve ALL \\vspace, \\hspace, blank lines, comments (%), and whitespace exactly as-is
-    
-    GOOD EXAMPLES:
-    - "\\resumeItem{Built a database system}" -> "\\resumeItem{Developed a PostgreSQL database system}"
-    - "worked on data" -> "analyzed datasets" (same content, different wording)
-    
-    BAD EXAMPLES (FORBIDDEN):
-    - "built a database" -> "built a database and optimized queries" (added content)
-    - "\\item{Built}" -> "Built" (removed LaTeX command)
-    - Combining two bullets into one
-    """
-    
-    resume_latex: str = dspy.InputField(desc="Resume in LaTeX format")
-    job_description: str = dspy.InputField(desc="Job description to extract keywords from")
-    target_pages: int = dspy.InputField(desc="Target page count")
-    optimized_latex: str = dspy.OutputField(desc="Resume with keywords integrated. Only bullet text changed. All LaTeX, \\vspace, \\hspace, blank lines, and whitespace preserved exactly.")
-
-
-class CondenseLongBullets(dspy.Signature):
-    r"""Condense qualifying multi-line bullets to reduce page count by removing words.
-
-    GOAL: Shorten bullets listed in qualifying_bullets from n lines to n-1 lines. This is the ONLY time content removal is allowed.
-    
-    RULES (priority order):
-    1. ONLY edit bullets listed in qualifying_bullets - ALL others must remain EXACTLY unchanged
-    2. ONLY edit text inside bullet commands (\\item, \\resumeItem, or custom) - preserve ALL LaTeX exactly
-    3. Preserve ALL \\vspace, \\hspace, blank lines, comments (%), and whitespace exactly as-is
-    4. Follow word removal targets closely (e.g., "Remove 15-20 words" means remove that many)
-    5. Keep same number of bullets - do NOT combine or merge bullets
-    6. Skip Education section bullets entirely
-    
-    CONDENSATION STRATEGY:
-    - Use abbreviations: "operational" -> "ops", "Machine Learning" -> "ML", "infrastructure" -> "infra"
-    - Shorten phrases: "a team of 4" -> "4-person team", "utilizing" -> "using"
-    - Remove redundant qualifiers: "successfully", "effectively"
-    - Remove less critical parenthetical details
-    - Be AGGRESSIVE - remove the full word count target to ensure line reduction
-    
-    GOOD EXAMPLE:
-    - "\\resumeItem{Built a comprehensive database system for...}" -> "\\resumeItem{Built a database system for...}"
-    
-    BAD EXAMPLES (FORBIDDEN):
-    - Combining two bullets into one
-    - "\\item{Built}" -> "Built" (removed LaTeX command)
-    """
-    
-    resume_latex: str = dspy.InputField(desc="Resume in LaTeX format")
-    target_pages: int = dspy.InputField(desc="Target number of pages")
-    current_pages: int = dspy.InputField(desc="Current page count")
-    qualifying_bullets: str = dspy.InputField(desc="Bullets to condense with line-by-line breakdown and word removal targets")
-    optimized_latex: str = dspy.OutputField(desc="Resume with qualifying bullets condensed. All LaTeX, \\vspace, \\hspace, blank lines, and whitespace preserved exactly.")
-
-
-# =============================================================================
 # Result Data Classes
 # =============================================================================
 
@@ -880,10 +1157,12 @@ class OptimizationResult:
 
 
 class ResumeOptimizerPipeline(dspy.Module):
-    """Main pipeline for optimizing resumes with two-phase approach.
+    """Unified length-preserving resume optimizer.
 
-    Phase 1: ATS Keyword Integration
-    Phase 2: Bullet Condensation (if needed - for long bullets or page reduction)
+    Uses a search-and-replace approach with strict constraints:
+    - Compile first to get bullet metrics (line count, word count)
+    - LLM generates replacements within word/char limits
+    - Failed replacements retry with ICL feedback up to max_iterations
     """
 
     def __init__(
@@ -896,29 +1175,27 @@ class ResumeOptimizerPipeline(dspy.Module):
         """Initialize the optimizer pipeline.
 
         Args:
-            max_iterations: Maximum iterations for Phase 2 (bullet condensation) (default: 3).
+            max_iterations: Maximum iterations for retry loop (from user settings).
             target_pages: Target number of pages for the resume (default: 1).
             max_bullet_lines: Maximum lines per bullet point (default: 2).
-            job_id: Optional job ID for status updates (only set status to "processing" when work actually starts).
+            job_id: Optional job ID for status updates.
         """
         super().__init__()
-        # Use provided values or defaults (no longer fallback to settings since these come from frontend)
         self.max_iterations = max_iterations if max_iterations is not None else 3
         self.target_pages = target_pages if target_pages is not None else 1
         self.max_bullet_lines = max_bullet_lines if max_bullet_lines is not None else 2
         self.job_id = job_id
 
-        # Two separate optimizers for two-phase approach
-        # Using ChainOfThought for better quality: improved keyword integration, professional language, and job description alignment
-        self.ats_optimizer = dspy.ChainOfThought(OptimizeATSKeywords)
-        self.bullet_condenser = dspy.ChainOfThought(CondenseLongBullets)
+        # Unified optimizer - modern DSPy supports typed outputs directly in signatures
+        # ChainOfThought adds reasoning which improves keyword integration quality
+        self.bullet_optimizer = dspy.ChainOfThought(OptimizeBullets)
 
     def forward(
         self,
         resume_latex: str,
         job_description: str,
     ) -> OptimizationResult:
-        """Run the optimization pipeline with two-phase approach.
+        """Run the unified optimization pipeline.
 
         Args:
             resume_latex: Original resume in LaTeX format.
@@ -927,358 +1204,260 @@ class ResumeOptimizerPipeline(dspy.Module):
         Returns:
             OptimizationResult with optimized LaTeX and PDF.
         """
-        # Update status to "processing" ONLY when actual work starts (Phase 1 LLM call)
-        # This ensures jobs are only marked as processing when actively being worked on
+        # Update status to "processing" when actual work starts
         if self.job_id:
             update_job_status(self.job_id, "processing")
+
+        # Step 1: Compile original to get baseline metrics
+        logger.info("Compiling original resume to extract bullet metrics...")
+        original_compile = compile_latex(resume_latex)
         
-        # Phase 1: ATS Keyword Optimization
-        try:
-            ats_result = self.ats_optimizer(
-                resume_latex=resume_latex,
-                job_description=job_description,
-                target_pages=self.target_pages,
-            )
-            
-            phase1_latex = _fix_latex_issues(ats_result.optimized_latex)
-            
-            # Cleanup intermediate data from _fix_latex_issues
-            gc.collect()
-            
-            # Cleanup LLM result object
-            del ats_result
-            gc.collect()
-            
-        except Exception as e:
-            error_type = type(e).__name__
-            error_details = str(e)
-            logger.error(
-                f"Phase 1 (ATS keyword optimization) failed: {error_type}: {error_details}",
-                exc_info=True
-            )
-            # Log additional context for common errors
-            if "API" in error_type or "openai" in error_details.lower():
-                logger.error("Phase 1: This appears to be an OpenAI API error. Check API key and rate limits.")
-            elif "timeout" in error_details.lower():
-                logger.error("Phase 1: Request timed out. Model may be overloaded or response too long.")
-            elif "token" in error_details.lower():
-                logger.error("Phase 1: Token limit exceeded. Resume or job description may be too long.")
-            
+        if not original_compile.success:
+            logger.error(f"Original resume compilation failed: {original_compile.error_message}")
             return OptimizationResult(
                 success=False,
                 original_latex=resume_latex,
                 optimized_latex=resume_latex,
                 iterations=0,
-                error_message=f"Phase 1 (ATS keyword optimization) failed: {error_type}: {error_details}",
+                error_message=f"Original resume compilation failed: {original_compile.error_message}",
                 filename=None,
             )
 
-        # Validate Phase 1 result
-        is_valid, validation_error = validate_latex(phase1_latex)
-        if not is_valid:
-            phase1_latex = _fix_latex_issues(phase1_latex)
-
-        # Validate Skills and Education sections unchanged
-        skills_preserved = _validate_section_preservation(phase1_latex, resume_latex, "Skills")
-        education_preserved = _validate_section_preservation(phase1_latex, resume_latex, "Education")
-        
-        phase1_compile = compile_latex(phase1_latex)
-        
-        if not phase1_compile.success:
-            phase1_latex = _fix_latex_issues(phase1_latex)
-            phase1_compile = compile_latex(phase1_latex)
-            
-            if not phase1_compile.success:
-                logger.error(f"Phase 1 compilation still failed after fixes: {phase1_compile.error_message}")
-                return OptimizationResult(
-                    success=False,
-                    original_latex=resume_latex,
-                    optimized_latex=phase1_latex,
-                    iterations=1,
-                    error_message=f"Phase 1 compilation failed: {phase1_compile.error_message}",
-                    filename=None,
-                )
-
-        # Phase 2: Bullet Condensation (check if needed)
-        phase1_quality = check_quality(
-            pdf_bytes=phase1_compile.pdf_bytes,
-            target_pages=self.target_pages,
-            max_bullet_lines=self.max_bullet_lines,
-            latex=phase1_latex,
+        # Step 2: Extract bullet constraints from compiled PDF
+        logger.info("Extracting bullet constraints from PDF...")
+        all_constraints = _extract_bullet_constraints(
+            original_compile.pdf_bytes,
+            resume_latex,
         )
         
-        # Run Phase 2 if: (1) over target pages OR (2) has quality issues (e.g., long bullets)
-        if phase1_compile.page_count <= self.target_pages and phase1_quality.passes:
-            # Already at target pages and no quality issues - return early
-            # Keep PDF bytes for result, but delete from compile result
-            pdf_bytes = phase1_compile.pdf_bytes
-            del phase1_compile.pdf_bytes
-            gc.collect()
+        # Filter to only Experience and Projects bullets (skip Education, Skills)
+        constraints_to_optimize = [
+            c for c in all_constraints
+            if c.section not in ("Education", "Skills", "Unknown")
+            and c.word_count >= 3  # Skip very short bullets
+        ]
+        
+        if not constraints_to_optimize:
+            logger.info("No bullets to optimize, returning original")
             return OptimizationResult(
                 success=True,
                 original_latex=resume_latex,
-                optimized_latex=phase1_latex,
-                pdf_bytes=pdf_bytes,
-                page_count=phase1_quality.page_count,
-                iterations=1,
+                optimized_latex=resume_latex,
+                pdf_bytes=original_compile.pdf_bytes,
+                page_count=original_compile.page_count,
+                iterations=0,
                 error_message=None,
                 filename=None,
             )
-
-        # Phase 2: Bullet Condensation
-        # Delete Phase 1 PDF bytes - we only need LaTeX (text) for Phase 2
-        del phase1_compile.pdf_bytes
-        gc.collect()
         
-        current_latex = phase1_latex
-        current_compile = phase1_compile  # This no longer has pdf_bytes
-        last_valid_latex = phase1_latex
-        # DO NOT store: last_valid_pdf = phase1_compile.pdf_bytes
-        last_quality_result = phase1_quality
-
-        # Phase 2: Bullet Condensation
-        phase2_iterations_completed = 0
+        logger.info(f"Found {len(constraints_to_optimize)} bullets to optimize")
+        
+        # Step 3: Iterative optimization loop
+        current_latex = resume_latex
+        pending_bullets = constraints_to_optimize.copy()
+        accepted_bullets: List[BulletConstraint] = []
+        failed_feedback: Dict[int, str] = {}  # For ICL feedback
+        
         for iteration in range(self.max_iterations):
-            # Compile current LaTeX to get PDF for analysis
-            # Note: On first iteration, current_compile may not have pdf_bytes (deleted after Phase 1)
-            if not hasattr(current_compile, 'pdf_bytes') or current_compile.pdf_bytes is None:
-                current_compile = compile_latex(current_latex)
-                if not current_compile.success:
-                    current_latex = _fix_latex_issues(current_latex)
-                    current_compile = compile_latex(current_latex)
-                    if not current_compile.success:
-                        logger.error(f"[Phase 2] Iteration {iteration + 1}: Compilation failed, reverting to last valid")
-                        current_latex = last_valid_latex
-                        continue
-            
-            # Get layout analysis
-            current_pages = current_compile.page_count
-            
-            # Get bullets data with utilization calculated
-            # Extract bullets and calculate utilization using same logic as analyze_layout
-            bullet_metrics = extract_line_metrics(current_compile.pdf_bytes, latex=current_latex)
-            bullets_data = bullet_metrics.get("bullets", [])
-            
-            # Calculate utilization for bullets (same logic as analyze_layout)
-            doc = fitz.open(stream=current_compile.pdf_bytes, filetype="pdf")
-            
-            try:
-                if len(doc) > 0:
-                    page = doc[0]
-                    text_dict = page.get_text("dict")
-                    page_rect = page.rect
-                    
-                    # Find content boundaries
-                    content_left = None
-                    content_right = None
-                    
-                    for block in text_dict.get("blocks", []):
-                        if "lines" in block:
-                            for line in block["lines"]:
-                                if "spans" in line:
-                                    line_text = " ".join([span.get("text", "") for span in line.get("spans", [])]).strip()
-                                    if len(line_text) > 3:
-                                        for span in line["spans"]:
-                                            if "text" in span and span["text"].strip():
-                                                bbox = span.get("bbox", [])
-                                                if len(bbox) == 4:
-                                                    line_width = bbox[2] - bbox[0]
-                                                    if line_width > 20:
-                                                        if content_left is None or bbox[0] < content_left:
-                                                            content_left = bbox[0]
-                                                        if content_right is None or bbox[2] > content_right:
-                                                            content_right = bbox[2]
-                    
-                    # Fallback to typical margins
-                    if content_left is None:
-                        content_left = page_rect.x0 + 36
-                    if content_right is None:
-                        content_right = page_rect.x1 - 36
-                    
-                    available_width = content_right - content_left
-                    
-                    # Calculate utilization for each bullet
-                    for bullet in bullets_data:
-                        last_line_x_end = bullet.get("last_line_x_end")
-                        last_line_x_start = bullet.get("last_line_x_start")
-                        if last_line_x_end is not None and last_line_x_start is not None:
-                            used_width = last_line_x_end - last_line_x_start
-                            utilization_percent = (used_width / available_width) * 100 if available_width > 0 else 0
-                            bullet["last_line_utilization_percent"] = utilization_percent
-                        else:
-                            # No coordinates available - assume 100% utilization
-                            bullet["last_line_utilization_percent"] = 100
-            finally:
-                doc.close()
-                del doc  # Explicitly delete doc reference
-            
-            # CRITICAL: Delete PDF bytes immediately after analysis
-            # We only need the metrics, not the PDF bytes
-            # Store page count before deleting PDF bytes
-            current_pages = current_compile.page_count
-            if current_compile.pdf_bytes:
-                del current_compile.pdf_bytes
-            gc.collect()
-            
-            # Filter qualifying bullets (includes long bullets and page reduction candidates)
-            qualifying_bullets_list = _filter_qualifying_bullets(
-                {"bullets": bullets_data},
-                current_pages=current_pages,
-                target_pages=self.target_pages,
-                max_bullet_lines=self.max_bullet_lines,
-            )
-            
-            if not qualifying_bullets_list:
-                phase2_iterations_completed = iteration + 1
+            if not pending_bullets:
+                logger.info(f"All bullets accepted by iteration {iteration}")
                 break
             
-            # Format qualifying bullets for LLM with word count targets
-            qualifying_bullets_str = _format_qualifying_bullets(
-                qualifying_bullets_list,
-                current_pages=current_pages,
-                target_pages=self.target_pages,
-                max_bullet_lines=self.max_bullet_lines,
+            logger.info(f"Iteration {iteration + 1}/{self.max_iterations}: {len(pending_bullets)} bullets pending")
+            
+            # Format bullets for LLM (include feedback for retries)
+            bullets_str = _format_bullets_for_llm(
+                pending_bullets,
+                failed_feedback=failed_feedback if iteration > 0 else None,
             )
             
-            # Call bullet condenser
+            # Call LLM
             try:
-                phase2_result = self.bullet_condenser(
-                    resume_latex=current_latex,
-                    target_pages=self.target_pages,
-                    current_pages=current_pages,
-                    qualifying_bullets=qualifying_bullets_str,
+                result = self.bullet_optimizer(
+                    job_description=job_description,
+                    bullets=bullets_str,
                 )
-                
-                current_latex = _fix_latex_issues(phase2_result.optimized_latex)
+                replacements = result.replacements
                 
             except Exception as e:
                 error_type = type(e).__name__
                 error_details = str(e)
                 logger.error(
-                    f"Phase 2 iteration {iteration + 1}: DSPy bullet condenser failed: {error_type}: {error_details}",
+                    f"Iteration {iteration + 1}: LLM call failed: {error_type}: {error_details}",
                     exc_info=True
                 )
-                # Log additional context for common errors
-                if "API" in error_type or "openai" in error_details.lower():
-                    logger.error(f"Phase 2 iteration {iteration + 1}: OpenAI API error. Check API key and rate limits.")
-                elif "timeout" in error_details.lower():
-                    logger.error(f"Phase 2 iteration {iteration + 1}: Request timed out.")
-                elif "token" in error_details.lower():
-                    logger.error(f"Phase 2 iteration {iteration + 1}: Token limit exceeded.")
-                
-                # Continue with last valid version
-                current_latex = last_valid_latex
+                # Continue to next iteration
                 continue
             
-            # Compile and validate
-            current_compile = compile_latex(current_latex)
+            # Step 3a: Apply ALL replacements (no pre-validation)
+            test_latex = current_latex
+            applied_replacements: Dict[int, Tuple[str, str, str]] = {}  # bullet_id -> (original_snippet, replacement_latex, keywords)
+            bullets_unchanged: List[BulletConstraint] = []
             
-            if not current_compile.success:
-                current_latex = _fix_latex_issues(current_latex)
-                current_compile = compile_latex(current_latex)
-                if not current_compile.success:
-                    logger.error(f"[Phase 2] Iteration {iteration + 1}: Still failed after fixes, reverting to last valid")
-                    current_latex = last_valid_latex
-                    continue
-
-            # Quality check
-            quality_result = check_quality(
-                pdf_bytes=current_compile.pdf_bytes,
-                target_pages=self.target_pages,
-                max_bullet_lines=self.max_bullet_lines,
-                latex=current_latex,
-            )
-            
-            if quality_result.passes:
-                # Keep PDF bytes for result
-                pdf_bytes = current_compile.pdf_bytes
-                del current_compile.pdf_bytes
-                gc.collect()
-                return OptimizationResult(
-                    success=True,
-                    original_latex=resume_latex,
-                    optimized_latex=current_latex,
-                    pdf_bytes=pdf_bytes,
-                    page_count=quality_result.page_count,
-                    iterations=iteration + 2,  # Phase 1 (1) + Phase 2 iterations
-                    filename=None,
+            for bullet in pending_bullets:
+                # Find replacement for this bullet
+                replacement = next(
+                    (r for r in replacements if r.bullet_id == bullet.bullet_id),
+                    None
                 )
+                
+                if not replacement:
+                    logger.warning(f"Bullet {bullet.bullet_id}: No replacement provided by LLM")
+                    bullet.last_failure_reason = "No replacement provided by LLM"
+                    bullet.attempts += 1
+                    continue
+                
+                # Apply replacement to LaTeX (no word/char validation - we'll check line counts after compile)
+                new_latex, success, was_unchanged = _apply_replacement_to_latex(
+                    test_latex,
+                    bullet,
+                    replacement.replacement_latex,
+                )
+                
+                if not success:
+                    logger.warning(f"Bullet {bullet.bullet_id}: Failed to apply replacement to LaTeX")
+                    bullet.last_failure_reason = "Failed to apply replacement to LaTeX"
+                    bullet.attempts += 1
+                    continue
+                
+                # If LLM returned original unchanged, accept it immediately
+                if was_unchanged:
+                    bullets_unchanged.append(bullet)
+                    logger.info(f"Bullet {bullet.bullet_id}: Unchanged (no substitution found)")
+                    continue
+                
+                # Track the replacement for potential revert
+                applied_replacements[bullet.bullet_id] = (
+                    bullet.latex_snippet,
+                    replacement.replacement_latex,
+                    ", ".join(replacement.keywords_integrated) if replacement.keywords_integrated else ""
+                )
+                test_latex = new_latex
             
-            # Store as last valid - ONLY LaTeX, NO PDF bytes!
-            # If rollback needed, we can recompile from LaTeX
-            last_valid_latex = current_latex
-            # DO NOT store: last_valid_pdf = current_compile.pdf_bytes
-            last_quality_result = quality_result
-            phase2_iterations_completed = iteration + 1
+            # Step 3b: Compile and check line counts
+            if applied_replacements:
+                logger.info(f"Compiling to verify line counts for {len(applied_replacements)} bullets...")
+                test_compile = compile_latex(test_latex)
+                
+                if not test_compile.success:
+                    # Compilation failed - reject all replacements in this batch
+                    logger.warning("Compilation failed after replacements - rejecting all")
+                    for bullet_id in applied_replacements:
+                        bullet = next(b for b in pending_bullets if b.bullet_id == bullet_id)
+                        bullet.last_failure_reason = "Compilation failed"
+                        bullet.attempts += 1
+                        failed_feedback[bullet_id] = "LaTeX compilation error"
+                else:
+                    # Check line counts
+                    bullets_to_check = [b for b in pending_bullets if b.bullet_id in applied_replacements]
+                    line_failures = _verify_line_counts(bullets_to_check, test_compile.pdf_bytes, test_latex)
+                    
+                    # Process results
+                    for bullet_id, (original_snippet, replacement_latex, keywords) in applied_replacements.items():
+                        bullet = next(b for b in pending_bullets if b.bullet_id == bullet_id)
+                        
+                        if bullet_id in line_failures:
+                            # Line count changed - REJECT and provide feedback
+                            old_lines, new_lines = line_failures[bullet_id]
+                            if new_lines > old_lines:
+                                feedback = f"TOO LONG: went from {old_lines} to {new_lines} lines. Use shorter words."
+                            else:
+                                feedback = f"TOO SHORT: went from {old_lines} to {new_lines} lines. Don't remove content."
+                            
+                            logger.info(f"Bullet {bullet_id}: Line count changed - {feedback}")
+                            bullet.last_failure_reason = feedback
+                            bullet.attempts += 1
+                            failed_feedback[bullet_id] = feedback
+                            # Revert this bullet's change
+                            test_latex = test_latex.replace(replacement_latex, original_snippet, 1)
+                        else:
+                            # Line count preserved - ACCEPT
+                            accepted_bullets.append(bullet)
+                            logger.info(f"Bullet {bullet_id}: Accepted (keywords: {keywords})")
+                    
+                    # Update current_latex with accepted changes
+                    current_latex = test_latex
             
-            # Delete current PDF bytes before next iteration
-            del current_compile.pdf_bytes
+            # Accept unchanged bullets
+            for bullet in bullets_unchanged:
+                accepted_bullets.append(bullet)
+            
+            # Build new pending list
+            new_pending = []
+            for bullet in pending_bullets:
+                if bullet not in accepted_bullets:
+                    new_pending.append(bullet)
+            
+            pending_bullets = new_pending
+            failed_feedback = {k: v for k, v in failed_feedback.items() if any(b.bullet_id == k for b in pending_bullets)}
+            
+            # Clean up
             gc.collect()
-
-        # Completed all iterations, performing final compile and quality check
+        
+        # Step 4: Compile final result
+        logger.info("Compiling optimized resume...")
+        current_latex = _fix_latex_issues(current_latex)
         final_compile = compile_latex(current_latex)
         
-        if final_compile.success:
-            final_quality = check_quality(
-                pdf_bytes=final_compile.pdf_bytes,
-                target_pages=self.target_pages,
-                max_bullet_lines=self.max_bullet_lines,
-                latex=current_latex,
-            )
+        if not final_compile.success:
+            # Try one more time with fixes
+            current_latex = _fix_latex_issues(current_latex)
+            final_compile = compile_latex(current_latex)
             
-            # Keep final PDF bytes for result
-            final_pdf_bytes = final_compile.pdf_bytes
-            del final_compile.pdf_bytes
-            
-            # Clean up any remaining references
-            if hasattr(current_compile, 'pdf_bytes'):
-                del current_compile.pdf_bytes
-            
-            gc.collect()
-            
-            return OptimizationResult(
-                success=final_quality.passes,
-                original_latex=resume_latex,
-                optimized_latex=current_latex,
-                pdf_bytes=final_pdf_bytes,
-                page_count=final_quality.page_count,
-                iterations=self.max_iterations + 1,  # Phase 1 (1) + Phase 2 max iterations
-                error_message=(
-                    f"Quality issues remain after Phase 2: {final_quality.issues_summary}"
-                    if not final_quality.passes else None
-                ),
-                filename=None,
-            )
-        else:
-            # Return last valid version - recompile from LaTeX (no PDF bytes stored)
-            # Recompile last valid LaTeX to get PDF bytes for result
-            last_valid_compile = compile_latex(last_valid_latex)
-            if last_valid_compile.success:
+            if not final_compile.success:
+                logger.error(f"Final compilation failed: {final_compile.error_message}")
+                # Return original if compilation fails
                 return OptimizationResult(
                     success=False,
                     original_latex=resume_latex,
-                    optimized_latex=last_valid_latex,
-                    pdf_bytes=last_valid_compile.pdf_bytes,  # Recompiled, not stored
-                    page_count=last_quality_result.page_count if last_quality_result else 0,
-                    iterations=self.max_iterations + 1,
+                    optimized_latex=current_latex,
+                    pdf_bytes=original_compile.pdf_bytes,
+                    page_count=original_compile.page_count,
+                    iterations=self.max_iterations,
                     error_message=f"Final compilation failed: {final_compile.error_message}",
                     filename=None,
                 )
-            else:
-                # Fallback: return without PDF bytes if recompilation fails
-                return OptimizationResult(
-                    success=False,
-                    original_latex=resume_latex,
-                    optimized_latex=last_valid_latex,
-                    pdf_bytes=None,  # Could not recompile
-                    page_count=last_quality_result.page_count if last_quality_result else 0,
-                    iterations=self.max_iterations + 1,
-                    error_message=(
-                        f"Final compilation failed: {final_compile.error_message}. "
-                        f"Recompilation of last valid version also failed: {last_valid_compile.error_message}"
-                    ),
-                    filename=None,
-                )
+        
+        # Step 5: Verify line counts are preserved
+        logger.info("Verifying line counts are preserved...")
+        line_count_failures = _verify_line_counts(
+            constraints_to_optimize,
+            final_compile.pdf_bytes,
+            current_latex,
+        )
+        
+        if line_count_failures:
+            logger.warning(f"Line count changed for {len(line_count_failures)} bullets: {line_count_failures}")
+            # Note: We could revert these, but for now just log the warning
+        
+        # Quality check
+        quality_result = check_quality(
+            pdf_bytes=final_compile.pdf_bytes,
+            target_pages=self.target_pages,
+            max_bullet_lines=self.max_bullet_lines,
+            latex=current_latex,
+        )
+        
+        total_iterations = min(self.max_iterations, len([b for b in constraints_to_optimize if b.attempts > 0]) + 1)
+        
+        logger.info(
+            f"Optimization complete: {len(accepted_bullets)}/{len(constraints_to_optimize)} bullets optimized, "
+            f"{len(pending_bullets)} failed after {total_iterations} iterations"
+        )
+        
+        return OptimizationResult(
+            success=quality_result.passes,
+            original_latex=resume_latex,
+            optimized_latex=current_latex,
+            pdf_bytes=final_compile.pdf_bytes,
+            page_count=final_compile.page_count,
+            iterations=total_iterations,
+            error_message=(
+                f"Quality issues remain: {quality_result.issues_summary}"
+                if not quality_result.passes else None
+            ),
+            filename=None,
+        )
 
 
 def configure_dspy(

@@ -15,7 +15,7 @@ This is an open-source project built for fun to help others with their job appli
 ## Features
 
 - **ATS Keyword Optimization**: Automatically incorporates relevant keywords from job descriptions
-- **Page Count Control**: Configurable target pages (1-3) with intelligent condensing
+- **Line-Count Preservation**: Optimizes bullets while maintaining exact line counts (no layout changes)
 - **No Hallucination**: Only rephrases existing content - never invents new experiences
 - **Visual Diff Comparison**: Side-by-side PDF comparison with highlighted changes
 - **Word-Level Diff**: See exactly what changed with detailed text and LaTeX diffs
@@ -37,34 +37,58 @@ This is an open-source project built for fun to help others with their job appli
 
 ### Optimization Pipeline
 
+TailorTom uses a **line-count preserving optimizer** that validates changes by compiling and checking actual line counts:
+
 ```
 [Resume LaTeX + Job Description]
               │
               ▼
     ┌─────────────────────┐
-    │   ATS Optimize      │  ◄── GPT-5-mini
-    │   (DSPy Module)     │
+    │   pdflatex compile  │  ◄── Get baseline PDF
     └──────────┬──────────┘
                │
                ▼
     ┌─────────────────────┐
-    │   pdflatex compile  │
+    │  Extract Bullet     │  ◄── Line count for each bullet
+    │  Constraints        │      (e.g., "2 lines", "1 line")
     └──────────┬──────────┘
                │
                ▼
-         ┌───────────┐
-         │ Pages OK? │
-         └─────┬─────┘
-          Yes  │  No
-           │   │   │
-           ▼   │   ▼
-        [DONE] │  ┌─────────────────────┐
-               │  │   Condense          │  ◄── GPT-5-mini
-               │  │   (DSPy Module)     │
-               │  └──────────┬──────────┘
-               │             │
-               └─────────────┘  (loop, max 2-5 iterations)
+    ┌─────────────────────┐
+    │  Optimize Bullets   │  ◄── GPT-5-mini + ChainOfThought
+    │  (DSPy Module)      │      "MUST stay N lines"
+    └──────────┬──────────┘
+               │
+               ▼
+    ┌─────────────────────┐
+    │  Apply All          │  ◄── Replace LaTeX snippets
+    │  Replacements       │
+    └──────────┬──────────┘
+               │
+               ▼
+    ┌─────────────────────┐
+    │  Compile & Check    │  ◄── pdflatex → extract new line counts
+    │  Line Counts        │
+    └──────────┬──────────┘
+               │
+          ┌────┴────┐
+          │ Same?   │
+          └────┬────┘
+         Yes   │   No
+          │    │    │
+          ▼    │    ▼
+      [Accept] │  [Revert + Feedback]
+               │    "went from 2 to 3 lines"
+               └────┘  (retry with feedback)
 ```
+
+**Key Features:**
+- **Line-count validation**: Checks actual rendered line counts, not word/char estimates
+- **Compile-and-verify**: Applies changes, compiles PDF, then validates
+- **Selective revert**: Only reverts bullets that changed line count
+- **Clear feedback**: "TOO LONG: went from 2 to 3 lines. Use shorter words."
+- **Section filtering**: Education and Skills sections are never modified
+- **Structured output**: Uses DSPy ChainOfThought with Pydantic-typed signatures
 
 ## Prerequisites
 
@@ -323,10 +347,16 @@ TailorTom/
 1. **User submits a job**: Provides LaTeX resume, job description, and optimization settings
 2. **API validates**: FastAPI validates LaTeX syntax and job description length
 3. **Job enqueued**: Job is stored in Redis and enqueued to Celery task queue
-4. **Worker processes**: Celery worker picks up job and runs optimization:
-   - **ATS Optimization**: DSPy module analyzes resume and job description, rephrases content to incorporate keywords
-   - **Compile & Check**: Resume is compiled with pdflatex and page count is checked
-   - **Condensation Loop**: If resume exceeds target pages, condenser module shortens content while preserving key achievements
+4. **Worker processes**: Celery worker picks up job and runs the line-count preserving optimizer:
+   - **Compile original**: PDF is compiled to extract bullet line counts
+   - **Extract constraints**: Each bullet gets a `BulletConstraint` with its line count (e.g., "2 lines")
+   - **Filter sections**: Education and Skills bullets are excluded (never modified)
+   - **LLM optimization**: DSPy ChainOfThought generates replacements with keywords integrated
+   - **Apply all replacements**: All LLM outputs are applied to the LaTeX
+   - **Compile and verify**: PDF is compiled and line counts are checked for each bullet
+   - **Selective revert**: Bullets that changed line count are reverted with feedback ("went from 2 to 3 lines")
+   - **ICL retry loop**: Failed bullets get specific feedback and retry up to max_iterations
+   - **Final compile**: Optimized LaTeX compiled with all accepted changes
 5. **Status updates**: Worker updates job status in Redis throughout processing
 6. **Diff Generation**: Word-level diff is computed and PDFs are annotated with highlights (on-demand)
 7. **Results**: User can view diffs, edit LaTeX, and download optimized PDF

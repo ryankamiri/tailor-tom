@@ -1,0 +1,23 @@
+id,section,words,chars,lines,text
+1,Experience,11,68,1,3.95/4.0 GPA | Candidate for Bachelor of Science in Computer Science
+2,Experience,23,206,2,"Relevant Coursework: Machine Learning, Object-Oriented Design, Algorithms and Data Structures, Datab"
+3,Experience,26,167,2,"Designed and led HubSpot’s first production LLM-as-judge evaluation pipeline for tools, raising tool"
+4,Experience,35,201,2,Deployed the grader as Kubernetes jobs in a governed MLOps workflow that gates every new or updated 
+5,Experience,30,210,2,"Curated tool-quality datasets in Snowflake using SQL and pandas , and used DSPy to optimize OpenAI G"
+6,Research,27,204,2,"NeurIPS 2025 research on LLM Collaboration with Multi-Agent Reinforcement Learning , modeling SWE-be"
+7,Research,23,157,2,"Implemented MAGRPO (from GRPO ) in PyTorch and built a SWE-bench pipeline with patch application, te"
+8,Research,19,146,2,Showed MAGRPO-based collaborating agents achieve 34% higher task success than a single-agent GRPO ba
+9,Research,20,145,2,"Maintain the SWE module in the open-source CoMLRL MARL library, contributing reusable MAGRPO compone"
+10,Experience,30,200,2,"Owned development of the Data Model Intro page, an LLM-powered onboarding surface for configuring cu"
+11,Experience,30,205,2,"Built the front end in React + TypeScript with Apollo Client and GraphQL , integrating AI recommen- "
+12,Experience,14,104,1,Collaborated with backend engineers and UX through customer interviews to support AI data-model feat
+13,Experience,32,189,2,"Led a team of 4 to develop a Large Language Model (LLM) utilizing Python , PyTorch , and HDBScan to "
+14,Experience,14,107,1,"Identified 15 clusters of customer complaints, revealing unknown pain points related to service disr"
+15,Projects,21,110,1,"1st in Health & Lifestyle as a team of 3, drove a real-time desktop posture coach that improved post"
+16,Projects,32,210,2,"Owned the ML system, transformed BlazePose keypoints into 7 geometry-derived features (e.g nose–shou"
+17,Projects,31,220,2,"Directed data collection and labeling, captured and annotated hundreds of photos of fellow participa"
+18,Experience,15,103,1,"1st place with React, Express, and MongoDB to aggregate open-source congressional data on current bi"
+19,Experience,15,113,1,"Employed a Large Language Model to interpret bills, simplifying legal complexities in congressional "
+20,Experience,15,102,1,Applied Transformer embeddings and vector search to enable users to perform semantic searches of bil
+21,Projects,30,193,2,Spearheaded a team of 3 to innovate a Shopify-integrated platform in React that allows users to crea
+22,Projects,15,99,1,"Acquired by Khattoi, a fashion clothing company with 3,000+ users, where the platform is integrated"

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.routes import optimize, jobs, diff, compile, settings, admin
+from tailor_tom.config import settings as app_settings
 
 # Configure logging
 logging.basicConfig(
@@ -22,6 +23,7 @@ async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
     # Startup
     logger.info("Starting TailorTom API server...")
+    logger.info("Celery queue for optimization tasks: %s (worker must use -Q %s)", app_settings.celery_queue_name, app_settings.celery_queue_name)
     yield
     # Shutdown
     logger.info("Shutting down TailorTom API server...")

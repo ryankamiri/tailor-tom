@@ -1,0 +1,82 @@
+# TailorTom Local Development Commands
+# =====================================
+
+# Prerequisites:
+# - Python 3.10+ with virtual environment
+# - Node.js 18+
+# - Redis running locally (or use Upstash URL)
+# - pdflatex installed (MacTeX or BasicTeX)
+
+# =====================================
+# FRONTEND (Next.js)
+# =====================================
+
+# Terminal 1: Run frontend dev server
+cd frontend && npm run dev
+
+# =====================================
+# BACKEND (FastAPI)
+# =====================================
+
+# Terminal 2: Run backend API server (ensure backend/.env has CELERY_QUEUE_NAME=local)
+source .venv/bin/activate && cd backend && uvicorn api.main:app --reload
+
+# =====================================
+# WORKER (Celery)
+# =====================================
+# IMPORTANT: Set CELERY_QUEUE_NAME=local in backend/.env so the API enqueues
+# to the same queue the worker consumes. Otherwise jobs go to "default" and
+# never get picked up by a worker listening to -Q local.
+#
+# LOCAL DEV: Use --pool=solo to avoid SIGSEGV. PyMuPDF (fitz) can segfault
+# in forked workers on macOS; solo runs the task in the main process.
+
+# Terminal 3: Run Celery worker with auto-reload (solo pool = no fork, avoids PyMuPDF segfault on macOS)
+source .venv/bin/activate && cd backend && watchfiles --filter python 'celery -A api.worker worker --loglevel=info --concurrency=1 -Q local --pool=solo'
+
+# Alternative: Run worker without auto-reload (still use --pool=solo on macOS to avoid SIGSEGV)
+source .venv/bin/activate && cd backend && celery -A api.worker worker --loglevel=info --concurrency=1 -Q local --pool=solo
+
+# =====================================
+# REDIS (Local)
+# =====================================
+
+# Option A: Use Docker
+docker run -d --name redis -p 6379:6379 redis:alpine
+
+# Option B: Use Homebrew (macOS)
+brew services start redis
+
+# Option C: Use Upstash (cloud, no local install)
+# Set REDIS_URL in backend/.env to your Upstash URL
+
+# =====================================
+# ENVIRONMENT SETUP
+# =====================================
+
+# Create virtual environment (first time only)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+
+# Create backend/.env file with:
+# OPENAI_API_KEY=your_api_key_here
+# MODEL_NAME=openai/gpt-5-mini
+# REDIS_URL=redis://localhost:6379/0
+# CELERY_QUEUE_NAME=local   <-- REQUIRED so API enqueues to same queue worker consumes (-Q local)
+
+# Create frontend/.env.local file with:
+# NEXT_PUBLIC_API_URL=http://localhost:8000
+
+# =====================================
+# QUICK START (3 terminals)
+# =====================================
+
+# Terminal 1:
+cd frontend && npm run dev
+
+# Terminal 2:
+source .venv/bin/activate && cd backend && uvicorn api.main:app --reload
+
+# Terminal 3:
+source .venv/bin/activate && cd backend && watchfiles --filter python 'celery -A api.worker worker --loglevel=info --concurrency=1 -Q local'
