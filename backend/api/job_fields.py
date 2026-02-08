@@ -38,3 +38,8 @@ JOB_OPTIONAL_STRING_FIELDS = [
 JOB_RESTART_COUNT_FIELD = "restart_count"
 JOB_LAST_RESTART_TIME_FIELD = "last_restart_time"
 
+# Redis keys for global job stats (counters)
+JOBS_STATS_PROCESSED_KEY = "tailortom:jobs:processed"
+JOBS_STATS_COMPLETED_KEY = "tailortom:jobs:completed"
+JOBS_STATS_FAILED_KEY = "tailortom:jobs:failed"
+

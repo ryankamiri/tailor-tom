@@ -13,6 +13,9 @@ from api.job_fields import (
     JOB_OPTIONAL_STRING_FIELDS,
     JOB_RESTART_COUNT_FIELD,
     JOB_LAST_RESTART_TIME_FIELD,
+    JOBS_STATS_PROCESSED_KEY,
+    JOBS_STATS_COMPLETED_KEY,
+    JOBS_STATS_FAILED_KEY,
 )
 
 logger = logging.getLogger(__name__)
@@ -220,8 +223,19 @@ def update_job_status(
         logger.error(f"Attempted to update non-existent job {job_id}")
         return
     
+    # Get previous status for stats (before updating)
+    previous_status = client.hget(key, "status") or ""
+    
     # Update status
     client.hset(key, "status", status)
+    
+    # Increment global job stats when transitioning to a terminal state
+    if status == "completed" and previous_status != "completed":
+        client.incr(JOBS_STATS_PROCESSED_KEY)
+        client.incr(JOBS_STATS_COMPLETED_KEY)
+    elif status == "failed" and previous_status != "failed":
+        client.incr(JOBS_STATS_PROCESSED_KEY)
+        client.incr(JOBS_STATS_FAILED_KEY)
     
     # Update additional fields
     for field, value in updates.items():
@@ -315,3 +329,20 @@ def get_orphaned_processing_jobs() -> list[Dict[str, Any]]:
             break
     
     return orphaned_jobs
+
+
+def get_job_stats() -> Dict[str, int]:
+    """Get global job statistics from Redis counters.
+    
+    Returns:
+        Dict with keys: processed, completed, failed (all integers, default 0 if key missing)
+    """
+    client = get_redis_client()
+    processed = int(client.get(JOBS_STATS_PROCESSED_KEY) or 0)
+    completed = int(client.get(JOBS_STATS_COMPLETED_KEY) or 0)
+    failed = int(client.get(JOBS_STATS_FAILED_KEY) or 0)
+    return {
+        "processed": processed,
+        "completed": completed,
+        "failed": failed,
+    }

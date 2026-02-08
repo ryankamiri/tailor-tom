@@ -287,6 +287,31 @@ export async function deleteResumeFromBackend(
 }
 
 /**
+ * Admin: Get global job statistics (processed, completed, failed).
+ */
+export async function getAdminJobStats(password: string): Promise<{
+  processed: number;
+  completed: number;
+  failed: number;
+}> {
+  const credentials = btoa(`admin:${password}`);
+  const res = await fetch(`${API_BASE}/api/admin/stats`, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Basic ${credentials}`,
+    },
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error('Invalid admin password');
+    }
+    const error = await res.json().catch(() => ({ detail: 'Failed to get stats' }));
+    throw new Error(error.detail || 'Failed to get stats');
+  }
+  return res.json();
+}
+
+/**
  * Admin: List all saved resumes.
  */
 export async function listAdminResumes(password: string): Promise<{

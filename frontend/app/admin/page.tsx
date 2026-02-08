@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { listAdminResumes, downloadResume, deleteResume } from '@/lib/api';
+import { listAdminResumes, downloadResume, deleteResume, getAdminJobStats } from '@/lib/api';
 import { getCachedAdminResumes, saveCachedAdminResumes, CachedResume, canCreateJobWithinDailyLimit, clearDailyJobCount } from '@/lib/storage';
 import { ADMIN_SESSION_TIMEOUT_MS } from '@/lib/constants';
 import { toast } from 'sonner';
@@ -48,6 +48,7 @@ export default function AdminPage() {
   const [resumes, setResumes] = useState<Resume[]>([]);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [dailyLimit, setDailyLimit] = useState(canCreateJobWithinDailyLimit());
+  const [jobStats, setJobStats] = useState<{ processed: number; completed: number; failed: number } | null>(null);
 
   const updateAdminSessionTimestamp = useCallback(() => {
     sessionStorage.setItem('admin_session_timestamp', Date.now().toString());
@@ -81,27 +82,23 @@ export default function AdminPage() {
 
     setIsLoading(true);
     try {
-      const data = await listAdminResumes(storedPassword);
+      const [data, stats] = await Promise.all([
+        listAdminResumes(storedPassword),
+        getAdminJobStats(storedPassword),
+      ]);
       const redisResumes = data.resumes;
       
       // Get cached resumes from local storage
       const cachedResumes = getCachedAdminResumes();
       
       // Merge: combine Redis + cached, remove duplicates by resume_id
-      // Use CachedResume internally to preserve LaTeX/user_id
       const resumeMap = new Map<string, CachedResume>();
-      
-      // Add cached resumes first
       cachedResumes.forEach((resume: CachedResume) => {
         resumeMap.set(resume.resume_id, resume);
       });
-      
-      // Add Redis resumes (override cached if same ID)
-      // But preserve LaTeX/user_id from cache if they exist
       redisResumes.forEach((resume: Resume) => {
         const existingCached = resumeMap.get(resume.resume_id);
         if (existingCached) {
-          // Preserve LaTeX and user_id from cache
           resumeMap.set(resume.resume_id, {
             ...resume,
             ...(existingCached.latex && { latex: existingCached.latex }),
@@ -112,21 +109,17 @@ export default function AdminPage() {
         }
       });
       
-      // Convert to array and sort chronologically (newest first)
       const mergedResumes = Array.from(resumeMap.values()).sort((a, b) => {
         const dateA = new Date(a.created_at).getTime();
         const dateB = new Date(b.created_at).getTime();
-        return dateB - dateA; // Newest first
+        return dateB - dateA;
       });
       
-      // Update state with merged resumes (cast to Resume[] for display)
       setResumes(mergedResumes as Resume[]);
-      
-      // Update cache with merged data - save as CachedResume[]
       saveCachedAdminResumes(mergedResumes);
-      
+      setJobStats(stats);
       setIsAuthenticated(true);
-      updateAdminSessionTimestamp(); // Update timestamp on successful login
+      updateAdminSessionTimestamp();
     } catch {
       // Password might be invalid, clear it
       sessionStorage.removeItem('admin_password');
@@ -171,7 +164,10 @@ export default function AdminPage() {
 
     setIsLoading(true);
     try {
-      const data = await listAdminResumes(password);
+      const [data, stats] = await Promise.all([
+        listAdminResumes(password),
+        getAdminJobStats(password),
+      ]);
       const redisResumes = data.resumes;
       
       // Get cached resumes from local storage
@@ -215,6 +211,7 @@ export default function AdminPage() {
       // Update cache with merged data - save as CachedResume[]
       saveCachedAdminResumes(mergedResumes);
       
+      setJobStats(stats);
       setIsAuthenticated(true);
       // Store password in sessionStorage for use in detail pages
       sessionStorage.setItem('admin_password', password);
@@ -240,8 +237,11 @@ export default function AdminPage() {
     
     setIsLoading(true);
     try {
-      // Fetch from Redis
-      const data = await listAdminResumes(password);
+      // Fetch from Redis (resumes + job stats)
+      const [data, stats] = await Promise.all([
+        listAdminResumes(password),
+        getAdminJobStats(password),
+      ]);
       const redisResumes = data.resumes;
       
       // Get cached resumes from local storage
@@ -285,6 +285,7 @@ export default function AdminPage() {
       // Update cache with merged data (for next refresh) - save as CachedResume[]
       saveCachedAdminResumes(mergedResumes);
       
+      setJobStats(stats);
       updateAdminSessionTimestamp(); // Update timestamp on action
       if (showToast) {
         toast.success('Resume list refreshed');
@@ -513,6 +514,54 @@ export default function AdminPage() {
             </Button>
           </div>
         </div>
+
+        {/* Job Statistics Card */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Job Statistics (Redis)</CardTitle>
+            <CardDescription>
+              Global counters for optimization jobs. Refreshed when you load or refresh the page.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {jobStats !== null ? (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Processed</p>
+                    <p className="text-2xl font-semibold">{jobStats.processed}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Completed</p>
+                    <p className="text-2xl font-semibold text-emerald-600 dark:text-emerald-400">{jobStats.completed}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Failed</p>
+                    <p className="text-2xl font-semibold text-red-600 dark:text-red-400">{jobStats.failed}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Pass rate</p>
+                    <p className="text-2xl font-semibold">
+                      {jobStats.processed > 0
+                        ? `${((jobStats.completed / jobStats.processed) * 100).toFixed(1)}%`
+                        : '—'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Fail rate</p>
+                    <p className="text-2xl font-semibold">
+                      {jobStats.processed > 0
+                        ? `${((jobStats.failed / jobStats.processed) * 100).toFixed(1)}%`
+                        : '—'}
+                    </p>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">Load or refresh to see job statistics.</p>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Daily Job Limit Management Card */}
         <Card>

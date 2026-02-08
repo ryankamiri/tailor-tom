@@ -6,6 +6,7 @@ import secrets
 from fastapi import APIRouter, HTTPException, Depends, Query, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from api.resume_storage import list_all_resumes, get_resume, delete_resume
+from api.storage import get_job_stats
 from tailor_tom.config import settings
 from tailor_tom.latex_compiler import compile_latex
 
@@ -44,6 +45,25 @@ def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
         )
     
     return credentials.username
+
+
+@router.get("/admin/stats")
+async def get_stats(username: str = Depends(verify_admin)):
+    """Get global job statistics (admin only).
+    
+    Returns:
+        processed: total jobs that reached a terminal state (completed or failed)
+        completed: jobs that completed successfully
+        failed: jobs that failed
+    """
+    try:
+        return get_job_stats()
+    except Exception as e:
+        logger.exception(f"Failed to get job stats: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get job stats: {str(e)}",
+        )
 
 
 @router.get("/admin/resumes")
