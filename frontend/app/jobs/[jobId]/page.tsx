@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { getJobStatus, getJobLatex, JobStatus, deleteJob, compileLatexToPdf } from '@/lib/api';
 import { updateJobStatus, storeOptimizedLatex, getOptimizedLatex, getStoredJob, getJobFilename } from '@/lib/storage';
-import { showJobCompleteNotification, showJobFailedNotification, isTabFocused } from '@/lib/notifications';
+import { showJobCompleteNotification, showJobFailedNotification } from '@/lib/notifications';
 import { JobStatusBadge } from '@/components/jobs/job-status-badge';
 import { JobStatusView } from '@/components/jobs/job-status-view';
 import { JobResultsView } from '@/components/jobs/job-results-view';
@@ -227,7 +227,7 @@ export default function JobDetailsPage() {
 
           // Show notification
           if (status.company_name) {
-            showJobCompleteNotification(status.company_name, jobId, isTabFocused());
+            showJobCompleteNotification(status.company_name, jobId);
           }
         } else if (status.status === 'failed') {
           clearInterval(interval);
@@ -262,7 +262,6 @@ export default function JobDetailsPage() {
             status.company_name || 'Your',
             jobId,
             status.error_message,
-            isTabFocused()
           );
         }
       } catch (error) {
