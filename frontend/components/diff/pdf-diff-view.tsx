@@ -146,7 +146,7 @@ export function PdfDiffView({ originalLatex, optimizedLatex, trigger, showErrorO
       <CardHeader>
         <CardTitle>PDF Comparison</CardTitle>
         <CardDescription>
-          Side-by-side view with highlighted changes. Red highlights indicate removed text, green highlights indicate added text.
+          {`Side-by-side view with highlighted changes. Red highlights indicate removed text, green highlights indicate added text. To download a clean PDF without highlights, use the "Download Optimized Resume" button above.`}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -160,7 +160,7 @@ export function PdfDiffView({ originalLatex, optimizedLatex, trigger, showErrorO
             <div className="border rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900">
               {originalPdfUrl && (
                 <iframe
-                  src={originalPdfUrl}
+                  src={`${originalPdfUrl}#toolbar=0&navpanes=0`}
                   className="w-full h-[800px] border-0"
                   title="Original Resume PDF"
                 />
@@ -177,7 +177,7 @@ export function PdfDiffView({ originalLatex, optimizedLatex, trigger, showErrorO
             <div className="border rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900">
               {optimizedPdfUrl && (
                 <iframe
-                  src={optimizedPdfUrl}
+                  src={`${optimizedPdfUrl}#toolbar=0&navpanes=0`}
                   className="w-full h-[800px] border-0"
                   title="Optimized Resume PDF"
                 />

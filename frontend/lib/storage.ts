@@ -272,23 +272,9 @@ interface DailyCompletionsStore {
 
 /**
  * Read daily completions count for today. Returns 0 if key missing, invalid, or date is not today.
- * Respects admin reset: if tailortom:daily_job_reset is set for today, returns 0.
  */
 function getDailyCompletionsCount(): number {
   if (typeof window === 'undefined') return 0;
-
-  // Admin reset for today: return 0 (bypass active)
-  const resetKey = `${STORAGE_PREFIX}daily_job_reset`;
-  const resetTimestamp = localStorage.getItem(resetKey);
-  if (resetTimestamp) {
-    const resetDate = new Date(parseInt(resetTimestamp, 10));
-    resetDate.setHours(0, 0, 0, 0);
-    const todayDate = new Date();
-    todayDate.setHours(0, 0, 0, 0);
-    if (resetDate.getTime() === todayDate.getTime()) {
-      return 0;
-    }
-  }
 
   const stored = localStorage.getItem(DAILY_JOB_COMPLETIONS_KEY);
   if (!stored) return 0;
@@ -405,23 +391,21 @@ export function canCreateJobWithinDailyLimit(): {
 
 /**
  * Clear daily job count for admin bypass.
- * Stores a reset timestamp in localStorage that makes getTodayCompletedJobs()
- * return 0 for the current day (in current local timezone), effectively resetting the count.
- * 
- * Timezone handling: Uses current local timezone, so reset applies to "today" in
- * the user's current location.
+ * Resets the daily completions counter to 0 for today. New completions after
+ * the reset will correctly increment from 0.
  */
 export function clearDailyJobCount(): void {
   if (typeof window === 'undefined') return;
   
-  // Get today in current local timezone (automatically adjusts if user changed timezones)
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = getTodayDateString();
+  localStorage.setItem(DAILY_JOB_COMPLETIONS_KEY, JSON.stringify({ date: today, count: 0 }));
   
-  // Store reset timestamp - when getTodayCompletedJobs checks this and
-  // sees it's from today (in current timezone), it will return 0 regardless of actual completed jobs
+  // Clean up old reset flag if it exists (no longer used)
   const resetKey = `${STORAGE_PREFIX}daily_job_reset`;
-  localStorage.setItem(resetKey, today.getTime().toString());
+  localStorage.removeItem(resetKey);
+  
+  // Dispatch event so UI components update immediately
+  window.dispatchEvent(new Event('localStorageChange'));
 }
 
 /**

@@ -20,6 +20,16 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)  # Only log errors for Celery tasks
 
 
+def _filename_from_job(job: dict | None) -> str:
+    """Build FirstName_LastName_CompanyName.pdf from job data. Falls back to 'resume.pdf' if job/names missing."""
+    if not job:
+        return "resume.pdf"
+    first = (job.get("first_name") or "").strip().replace(" ", "_").replace("/", "_").title() or "Unknown"
+    last = (job.get("last_name") or "").strip().replace(" ", "_").replace("/", "_").title() or "Unknown"
+    company = (job.get("company_name") or "").strip().replace(" ", "_").replace("/", "_").title() or "Resume"
+    return f"{first}_{last}_{company}.pdf"
+
+
 @worker_ready.connect
 def configure_worker(sender, **kwargs):
     """Configure worker on startup.
@@ -140,15 +150,15 @@ def configure_worker(sender, **kwargs):
                     error_message=f"Job cannot be recovered: missing required fields ({', '.join(missing_fields)}). The job data is incomplete and cannot be processed.",
                     result={
                         "optimized_latex": "",
-                        "filename": "resume.pdf",
+                        "filename": _filename_from_job(job_data),
                         "error_details": {
                             "iterations": 0,
                             "optimized_latex_available": False,
                             "original_latex_length": 0,
                             "optimized_latex_length": 0,
-                    }
-                },
-            )
+                        },
+                    },
+                )
                 continue
             
             try:
@@ -432,11 +442,11 @@ def optimize_resume_task(
             except:
                 pass
         
-        # If no result data, provide default structure
+        # If no result data, provide default structure with proper filename from job
         if not result_data:
             result_data = {
                 "optimized_latex": "",
-                "filename": "resume.pdf",
+                "filename": _filename_from_job(job),
                 "error_details": {
                     "iterations": 0,
                     "optimized_latex_available": False,
@@ -444,6 +454,8 @@ def optimize_resume_task(
                     "optimized_latex_length": 0,
                 }
             }
+        elif result_data.get("filename") == "resume.pdf":
+            result_data["filename"] = _filename_from_job(job)
         
         update_job_status(
             job_id,
@@ -457,12 +469,23 @@ def optimize_resume_task(
     except Exception as e:
         logger.exception(f"[optimize_resume_task] Error during optimization for job {job_id}")
         
-        # Update job with error
+        # Update job with error; include result with proper filename so download uses First_Last_Company.pdf
+        job = get_job(job_id)
         update_job_status(
             job_id,
             "failed",
             completed_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
             error_message=str(e),
+            result={
+                "optimized_latex": "",
+                "filename": _filename_from_job(job),
+                "error_details": {
+                    "iterations": 0,
+                    "optimized_latex_available": False,
+                    "original_latex_length": 0,
+                    "optimized_latex_length": 0,
+                },
+            },
         )
         
         # Re-raise to trigger Celery retry (for non-timeout exceptions)

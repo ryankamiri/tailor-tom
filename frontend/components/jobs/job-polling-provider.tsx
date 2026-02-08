@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { getStoredJobs, updateJobStatus } from '@/lib/storage';
 import { getJobStatus } from '@/lib/api';
-import { showJobCompleteNotification, isTabFocused } from '@/lib/notifications';
+import { showJobCompleteNotification, showJobFailedNotification } from '@/lib/notifications';
 
 /**
  * Global job polling provider that runs on all pages.
@@ -44,12 +44,17 @@ export function JobPollingProvider() {
                 status.error_message
               );
               
-              // Show notification when job completes
-              if (status.status === 'completed' && status.company_name) {
+              // Show notification when job completes or fails
+              if (status.status === 'completed') {
                 showJobCompleteNotification(
-                  status.company_name,
+                  status.company_name || 'Your',
                   job.jobId,
-                  isTabFocused()
+                );
+              } else if (status.status === 'failed') {
+                showJobFailedNotification(
+                  status.company_name || 'Your',
+                  job.jobId,
+                  status.error_message || null,
                 );
               }
             }

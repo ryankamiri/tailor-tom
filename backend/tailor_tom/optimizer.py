@@ -74,15 +74,22 @@ class OptimizeBullets(dspy.Signature):
     - Making it longer (more lines) = REJECTED
     - Making it shorter (fewer lines) = REJECTED
     
+    WORD COUNT RULE (CRITICAL):
+    - Each bullet shows its max word count (e.g., "max 14 words")
+    - Your replacement MUST have the SAME number of words or FEWER than the original
+    - Exceeding the max word count = REJECTED
+    - NEVER add new phrases or clauses -- only REPLACE existing words with better keywords
+    
     REPLACEMENT STRATEGY:
     - REPLACE generic words with job-relevant keywords
     - "worked on" -> "developed", "helped" -> "contributed"
     - "system" -> "microservices", "built" -> "engineered"
-    - Keep the same approximate length to preserve line count
+    - Swap words 1-for-1 to keep the same word count and preserve line count
+    - Do NOT append extra keywords at the end of a bullet
     
     SEMANTIC RULES:
     - Only insert keywords that make SENSE in context
-    - ML bullets get ML keywords, frontend bullets get frontend keywords
+    - ML bullets get ML keywords, frontend bullets get frontend keywords, backend bullets get backend keywords
     - Do NOT replace technical terms with unrelated keywords
     - Preserve all facts, metrics, and achievements
     
@@ -97,9 +104,9 @@ class OptimizeBullets(dspy.Signature):
     """
     
     job_description: str = dspy.InputField(desc="Job description with target keywords to integrate")
-    bullets: str = dspy.InputField(desc="Bullets with IDs, line counts, and LaTeX content")
+    bullets: str = dspy.InputField(desc="Bullets with IDs, line counts, word count limits, and LaTeX content")
     replacements: List[BulletReplacement] = dspy.OutputField(
-        desc="Optimized bullets - each must preserve the original line count"
+        desc="Optimized bullets - each must preserve the original line count and not exceed max word count"
     )
 
 
@@ -295,16 +302,16 @@ def _format_bullets_for_llm(
     """
     lines = []
     
-    # ICL feedback for retries - line count failures
+    # ICL feedback for retries - line count and word count failures
     if failed_feedback:
-        lines.append("**REJECTED - Fix these line count issues:**")
+        lines.append("**REJECTED - Fix these issues:**")
         for bullet_id, reason in failed_feedback.items():
             lines.append(f"- B{bullet_id}: {reason}")
         lines.append("")
     
     for bullet in bullets:
-        # Format: Show line count as the primary constraint
-        lines.append(f"**B{bullet.bullet_id}** [{bullet.section}] MUST stay {bullet.line_count} line{'s' if bullet.line_count != 1 else ''}")
+        # Format: Show line count AND word count as constraints
+        lines.append(f"**B{bullet.bullet_id}** [{bullet.section}] MUST stay {bullet.line_count} line{'s' if bullet.line_count != 1 else ''}, max {bullet.word_count} words")
         lines.append(f"LaTeX: {bullet.latex_snippet}")
         
         if bullet.last_failure_reason:
@@ -1289,7 +1296,7 @@ class ResumeOptimizerPipeline(dspy.Module):
                 # Continue to next iteration
                 continue
             
-            # Step 3a: Apply ALL replacements (no pre-validation)
+            # Step 3a: Apply replacements with pre-validation
             test_latex = current_latex
             applied_replacements: Dict[int, Tuple[str, str, str]] = {}  # bullet_id -> (original_snippet, replacement_latex, keywords)
             bullets_unchanged: List[BulletConstraint] = []
@@ -1307,7 +1314,16 @@ class ResumeOptimizerPipeline(dspy.Module):
                     bullet.attempts += 1
                     continue
                 
-                # Apply replacement to LaTeX (no word/char validation - we'll check line counts after compile)
+                # Pre-validate word/char count BEFORE applying to LaTeX
+                is_valid, rejection_reason = _validate_replacement(bullet, replacement.replacement_latex)
+                if not is_valid:
+                    logger.info(f"Bullet {bullet.bullet_id}: Pre-validation failed - {rejection_reason}")
+                    bullet.last_failure_reason = rejection_reason
+                    bullet.attempts += 1
+                    failed_feedback[bullet.bullet_id] = rejection_reason
+                    continue
+                
+                # Apply replacement to LaTeX
                 new_latex, success, was_unchanged = _apply_replacement_to_latex(
                     test_latex,
                     bullet,
@@ -1357,12 +1373,18 @@ class ResumeOptimizerPipeline(dspy.Module):
                         bullet = next(b for b in pending_bullets if b.bullet_id == bullet_id)
                         
                         if bullet_id in line_failures:
-                            # Line count changed - REJECT and provide feedback
+                            # Line count changed - REJECT and provide feedback with word count analysis
                             old_lines, new_lines = line_failures[bullet_id]
+                            clean_repl = _strip_latex_commands(replacement_latex)
+                            repl_words = len(clean_repl.split()) if clean_repl else 0
+                            word_diff = repl_words - bullet.word_count
+                            
                             if new_lines > old_lines:
-                                feedback = f"TOO LONG: went from {old_lines} to {new_lines} lines. Use shorter words."
+                                word_info = f" (you used {repl_words} words vs original {bullet.word_count}, {'+' if word_diff > 0 else ''}{word_diff})" if word_diff != 0 else ""
+                                feedback = f"TOO LONG: went from {old_lines} to {new_lines} lines{word_info}. REPLACE words instead of adding new ones. Max {bullet.word_count} words."
                             else:
-                                feedback = f"TOO SHORT: went from {old_lines} to {new_lines} lines. Don't remove content."
+                                word_info = f" (you used {repl_words} words vs original {bullet.word_count}, {word_diff})" if word_diff != 0 else ""
+                                feedback = f"TOO SHORT: went from {old_lines} to {new_lines} lines{word_info}. Don't remove content."
                             
                             logger.info(f"Bullet {bullet_id}: Line count changed - {feedback}")
                             bullet.last_failure_reason = feedback
