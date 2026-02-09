@@ -1,12 +1,14 @@
 /** API client functions for TailorTom backend. */
 
+import { type TargetPages, DEFAULT_TARGET_PAGES } from './constants';
+
 // Remove trailing slash to avoid double slashes in URLs
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/+$/, '');
 
 export interface OptimizationRequest {
   resume_latex: string;
   job_description: string;
-  target_pages: number;
+  target_pages: TargetPages;
   first_name: string;
   last_name: string;
   company_name: string;
@@ -443,5 +445,57 @@ export async function deleteResume(
     const error = await res.json().catch(() => ({ detail: 'Failed to delete resume' }));
     throw new Error(error.detail || 'Failed to delete resume');
   }
+}
+
+/**
+ * Status response from the DOCX conversion polling endpoint.
+ */
+export type DocxConversionStatus =
+  | { status: 'pending' }
+  | { status: 'processing' }
+  | { status: 'completed'; latex: string; compiled_pdf: string }
+  | { status: 'failed'; error_message: string };
+
+/**
+ * Start a DOCX-to-LaTeX conversion job.
+ * The backend validates + extracts content synchronously, then enqueues
+ * the LLM call on the dedicated ``docx`` Celery queue.
+ * Returns a ``conversion_id`` to poll with ``getDocxConversionStatus``.
+ */
+export async function startDocxConversion(
+  file: File,
+  targetPages: TargetPages = DEFAULT_TARGET_PAGES
+): Promise<{ conversion_id: string }> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('target_pages', targetPages.toString());
+
+  const res = await fetch(`${API_BASE}/api/convert/docx`, {
+    method: 'POST',
+    body: formData, // No Content-Type header -- browser sets multipart boundary
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: 'Conversion failed' }));
+    throw new Error(error.detail || 'Failed to start .docx conversion');
+  }
+
+  return res.json();
+}
+
+/**
+ * Poll the status of an in-flight DOCX conversion.
+ */
+export async function getDocxConversionStatus(
+  conversionId: string
+): Promise<DocxConversionStatus> {
+  const res = await fetch(`${API_BASE}/api/convert/docx/${conversionId}`);
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: 'Conversion not found' }));
+    throw new Error(error.detail || 'Failed to get conversion status');
+  }
+
+  return res.json();
 }
 

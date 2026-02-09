@@ -1,6 +1,6 @@
 # TailorTom - ATS Resume Optimizer
 
-TailorTom is a free and open-source full-stack web application that optimizes your LaTeX resume for Applicant Tracking Systems (ATS). It uses DSPy and GPT-5-mini to intelligently incorporate relevant keywords from job descriptions while ensuring your resume stays within your target page count.
+TailorTom is a free and open-source full-stack web application that optimizes your resume for Applicant Tracking Systems (ATS). Start with LaTeX or upload a Word (.docx) resume—we convert it to LaTeX, then use DSPy and GPT to incorporate relevant keywords from job descriptions while keeping your resume within your target page count.
 
 ## About
 
@@ -14,12 +14,13 @@ This is an open-source project built for fun to help others with their job appli
 
 ## Features
 
+- **DOCX to LaTeX**: Upload a Word (.docx) resume and convert it to LaTeX automatically (no LaTeX experience required)
 - **ATS Keyword Optimization**: Automatically incorporates relevant keywords from job descriptions
 - **Line-Count Preservation**: Optimizes bullets while maintaining exact line counts (no layout changes)
-- **No Hallucination**: Only rephrases existing content - never invents new experiences
+- **No Hallucination**: Only rephrases existing content—never invents new experiences
 - **Visual Diff Comparison**: Side-by-side PDF comparison with highlighted changes
 - **Word-Level Diff**: See exactly what changed with detailed text and LaTeX diffs
-- **LaTeX Editor**: Edit optimized LaTeX directly in the browser with syntax highlighting
+- **LaTeX Editor**: Edit your resume LaTeX directly in the browser with syntax highlighting; PDF preview on save and on load
 - **PDF Export**: Download optimized resumes as PDFs
 - **Job Queue Management**: Track multiple optimization jobs with status updates
 - **Desktop Notifications**: Get notified when optimizations complete
@@ -265,9 +266,9 @@ FastAPI API (Render) → Redis Queue → Celery Workers (Render)
 2. Configure the service:
    - **Name**: `tailortom-worker` (or your preferred name)
    - **Environment**: `Docker`
-   - **Dockerfile Path**: `backend/Dockerfile`
+   - **Dockerfile Path**: `backend/Dockerfile.worker`
    - **Docker Context**: Root of repository
-   - **Start Command**: `celery -A api.worker worker --loglevel=info --concurrency=3`
+   - **Start Command**: leave default (image CMD consumes both `hosted` and `docx` queues)
 3. Add **the same environment variables** as the API service:
    ```
    OPENAI_API_KEY=your_api_key_here
@@ -275,6 +276,7 @@ FastAPI API (Render) → Redis Queue → Celery Workers (Render)
    REDIS_URL=redis://your_redis_url_here
    COMPILE_TIMEOUT=30
    CELERY_WORKER_CONCURRENCY=3
+   CELERY_QUEUE_NAME=hosted
    REDIS_TTL_DAYS=7
    ```
 4. **Plan**: Starter ($7/month) - can handle 3-5 concurrent jobs
@@ -319,12 +321,17 @@ TailorTom/
 │   │       ├── optimize.py   # Job creation and enqueueing
 │   │       ├── jobs.py       # Job status and management
 │   │       ├── diff.py       # Diff computation endpoints
-│   │       └── compile.py    # LaTeX compilation endpoints
+│   │       ├── compile.py    # LaTeX compilation endpoints
+│   │       ├── convert.py    # DOCX to LaTeX conversion
+│   │       ├── settings.py  # Resume storage
+│   │       └── admin.py      # Admin dashboard
 │   ├── tailor_tom/            # Core business logic
 │   │   ├── config.py         # Configuration management
 │   │   ├── optimizer.py      # DSPy modules and pipeline
 │   │   ├── latex_compiler.py # LaTeX compilation
 │   │   ├── layout_analyzer.py # PDF layout analysis
+│   │   ├── docx_converter.py # DOCX extraction and JSON classification
+│   │   ├── resume_renderer.py # Deterministic LaTeX renderer (Option D)
 │   │   └── diff_utils.py     # Diff computation and PDF highlighting
 │   ├── Dockerfile            # Docker configuration for Render
 │   └── requirements.txt      # Python dependencies
@@ -344,10 +351,11 @@ TailorTom/
 
 ## How It Works
 
-1. **User submits a job**: Provides LaTeX resume, job description, and optimization settings
-2. **API validates**: FastAPI validates LaTeX syntax and job description length
-3. **Job enqueued**: Job is stored in Redis and enqueued to Celery task queue
-4. **Worker processes**: Celery worker picks up job and runs the line-count preserving optimizer:
+1. **Set up resume (Settings)**: Paste LaTeX or upload a Word (.docx) resume. We convert DOCX to LaTeX and show a live PDF preview. Save your template and preferences.
+2. **User submits a job**: Provides job description; resume and optimization settings come from Settings
+3. **API validates**: FastAPI validates LaTeX syntax and job description length
+4. **Job enqueued**: Job is stored in Redis and enqueued to Celery task queue
+5. **Worker processes**: Celery worker picks up job and runs the line-count preserving optimizer:
    - **Compile original**: PDF is compiled to extract bullet line counts
    - **Extract constraints**: Each bullet gets a `BulletConstraint` with its line count (e.g., "2 lines")
    - **Filter sections**: Education and Skills bullets are excluded (never modified)
@@ -357,9 +365,9 @@ TailorTom/
    - **Selective revert**: Bullets that changed line count are reverted with feedback ("went from 2 to 3 lines")
    - **ICL retry loop**: Failed bullets get specific feedback and retry up to max_iterations
    - **Final compile**: Optimized LaTeX compiled with all accepted changes
-5. **Status updates**: Worker updates job status in Redis throughout processing
-6. **Diff Generation**: Word-level diff is computed and PDFs are annotated with highlights (on-demand)
-7. **Results**: User can view diffs, edit LaTeX, and download optimized PDF
+6. **Status updates**: Worker updates job status in Redis throughout processing
+7. **Diff Generation**: Word-level diff is computed and PDFs are annotated with highlights (on-demand)
+8. **Results**: User can view diffs, edit LaTeX, and download optimized PDF
 
 ## API Endpoints
 
@@ -373,6 +381,9 @@ TailorTom/
 ### Compilation
 - `POST /api/compile/validate` - Validate LaTeX syntax
 - `POST /api/compile` - Compile LaTeX to PDF
+
+### Conversion
+- `POST /api/convert/docx` - Convert a .docx resume to LaTeX (multipart: file, target_pages default 1)
 
 ### Diff
 - `POST /api/diff` - Compute text diff between two LaTeX strings

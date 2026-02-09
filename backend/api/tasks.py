@@ -1,6 +1,8 @@
 """Celery tasks for TailorTom optimization jobs."""
 
+import base64
 import gc
+import json
 import logging
 import os
 import sys
@@ -12,8 +14,14 @@ from celery.signals import worker_ready
 
 from api.celery_app import celery_app
 from api.job_fields import JOB_REENQUEUE_REQUIRED_FIELDS, JOB_RESTART_COUNT_FIELD, JOB_LAST_RESTART_TIME_FIELD
+from api.conversion_storage import (
+    CONVERSION_KEY_PREFIX,
+    CONVERSION_TTL,
+    get_redis_client as get_convert_redis,
+)
 from api.storage import update_job_status, get_job, get_orphaned_processing_jobs
 from tailor_tom.config import settings
+from tailor_tom.docx_converter import generate_latex_from_docx
 from tailor_tom.optimizer import optimize_resume, configure_dspy
 
 logger = logging.getLogger(__name__)
@@ -180,6 +188,7 @@ def configure_worker(sender, **kwargs):
                         'company_name': job_data.get("company_name") or None,  # Optional field
                     },
                     queue=queue_name,
+                    priority=5,  # lower than DOCX (0) so DOCX runs first
                 )
                 
                 # Reset status to pending and update restart tracking
@@ -506,4 +515,58 @@ def optimize_resume_task(
     finally:
         # Final cleanup
         pass
+
+
+# ---------------------------------------------------------------------------
+# DOCX Conversion Task (runs on dedicated 'docx' queue)
+# ---------------------------------------------------------------------------
+
+@celery_app.task(bind=True, name="api.tasks.convert_docx_task", max_retries=0)
+def convert_docx_task(self, conversion_id: str):
+    """Process DOCX-to-LaTeX conversion on the dedicated docx queue.
+
+    Reads structured content + target_pages from Redis, calls the LLM
+    classification + deterministic renderer, and stores the result back.
+    """
+    rc = get_convert_redis()
+    key = f"{CONVERSION_KEY_PREFIX}{conversion_id}"
+
+    try:
+        raw = rc.get(key)
+        if not raw:
+            logger.error("[convert_docx_task] Conversion %s not found in Redis", conversion_id)
+            return
+
+        data = json.loads(raw)
+
+        # Mark as processing
+        data["status"] = "processing"
+        rc.setex(key, CONVERSION_TTL, json.dumps(data))
+
+        structured_content = data["structured_content"]
+        target_pages = data.get("target_pages", 1)
+
+        latex, pdf_bytes = generate_latex_from_docx(
+            structured_content, target_pages=target_pages
+        )
+
+        compiled_pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+
+        result = {
+            "status": "completed",
+            "latex": latex,
+            "compiled_pdf": compiled_pdf_b64,
+        }
+        rc.setex(key, CONVERSION_TTL, json.dumps(result))
+
+    except Exception as exc:
+        logger.exception("[convert_docx_task] Conversion %s failed: %s", conversion_id, exc)
+        try:
+            error_result = {
+                "status": "failed",
+                "error_message": str(exc),
+            }
+            rc.setex(key, CONVERSION_TTL, json.dumps(error_result))
+        except Exception:
+            pass
 

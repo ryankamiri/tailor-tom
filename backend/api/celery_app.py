@@ -80,6 +80,7 @@ celery_app.conf.update(
     
     # Broker transport options - optimize Redis connection usage
     # Reduce connection overhead and polling frequency
+    # queue_order_strategy='priority' so higher-priority tasks (lower number) are consumed first
     broker_transport_options={
         'visibility_timeout': 3600,  # 1 hour - how long task is invisible after being received
         'fanout_prefix': True,  # Enable fanout for better performance
@@ -89,13 +90,14 @@ celery_app.conf.update(
             'timeout': 5.0,  # Connection timeout
         },
         # Reduce polling frequency by increasing socket timeout
-        # This makes workers wait longer before checking for new tasks
         'socket_timeout': 30.0,  # Socket timeout (increases time between polls)
         'socket_connect_timeout': 5.0,
         'socket_keepalive': True,
         'socket_keepalive_options': {},
-        # Use connection pooling more efficiently
-        'health_check_interval': 30,  # Check connection health every 30 seconds (instead of default 5)
+        'health_check_interval': 30,
+        # Task priority: lower value = higher priority (DOCX=0, optimization=5)
+        'queue_order_strategy': 'priority',
+        'priority_steps': list(range(10)),  # 0-9 so DOCX (0) runs before optimization (5)
     },
     
     # Worker polling optimization
@@ -105,9 +107,12 @@ celery_app.conf.update(
     worker_task_log_format='[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s',
     
     # Queue routing configuration
-    # Routes tasks to specific queues based on CELERY_QUEUE_NAME environment variable
+        # Both task types use the same queue; DOCX gets higher priority via apply_async(priority=0).
     task_routes={
         'api.tasks.optimize_resume_task': {
+            'queue': queue_name,
+        },
+        'api.tasks.convert_docx_task': {
             'queue': queue_name,
         },
     },

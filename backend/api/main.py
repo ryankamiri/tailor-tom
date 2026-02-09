@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from api.routes import optimize, jobs, diff, compile, settings, admin
+from api.routes import optimize, jobs, diff, compile, settings, admin, convert
 from tailor_tom.config import settings as app_settings
 
 # Configure logging
@@ -94,6 +94,7 @@ app.include_router(diff.router, prefix="/api", tags=["diff"])
 app.include_router(compile.router, prefix="/api", tags=["compile"])
 app.include_router(settings.router, prefix="/api", tags=["settings"])
 app.include_router(admin.router, prefix="/api", tags=["admin"])
+app.include_router(convert.router, prefix="/api", tags=["convert"])
 
 
 @app.get("/")

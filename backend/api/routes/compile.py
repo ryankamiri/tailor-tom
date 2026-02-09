@@ -20,6 +20,7 @@ class CompileRequest(BaseModel):
     """Request model for general LaTeX compilation."""
     latex: str
     filename: str = "resume.pdf"
+    strict: bool = False  # Overleaf-like by default: compile despite errors. Set True to stop on first error.
 
 
 @router.post("/compile/validate")
@@ -57,9 +58,13 @@ async def compile_latex_to_pdf(request: CompileRequest):
     
     This endpoint is useful for compiling LaTeX that may have been edited
     or when the job no longer exists in the backend.
+    Set strict=false to use Overleaf-like \"compile despite errors\" (may still get a PDF when log has errors).
     """
     try:
-        compile_result = compile_latex(request.latex)
+        compile_result = compile_latex(
+            request.latex,
+            halt_on_error=request.strict,
+        )
         
         if not compile_result.success:
             error_msg = compile_result.error_message or "LaTeX compilation failed"

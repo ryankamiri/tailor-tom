@@ -20,3 +20,6 @@ python-multipart>=0.0.6
 celery>=5.3.0
 redis>=5.0.0
 kombu>=5.3.0
+
+# DOCX conversion
+python-docx>=1.0

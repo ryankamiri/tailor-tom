@@ -33,10 +33,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy backend code
 COPY backend/ /app/
 
-# Run the Celery worker
-# Concurrency is set via CELERY_WORKER_CONCURRENCY env var (default: 3)
-# Queue name is set via CELERY_QUEUE_NAME env var (default: 'default' for backward compatibility)
-# For hosted worker, set CELERY_QUEUE_NAME=hosted
-# For local worker, set CELERY_QUEUE_NAME=local
+# Run the Celery worker (optimization + DOCX; same queue, DOCX has higher task priority).
+# Concurrency is set via CELERY_WORKER_CONCURRENCY env var (default: 3).
+# Queue name is set via CELERY_QUEUE_NAME env var (default: 'default').
+# For hosted: CELERY_QUEUE_NAME=hosted. For local: CELERY_QUEUE_NAME=local.
 CMD celery -A api.worker worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-3} --queues=${CELERY_QUEUE_NAME:-default}
 

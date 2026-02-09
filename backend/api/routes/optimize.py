@@ -91,6 +91,7 @@ async def create_optimization_job(
                 'company_name': request.company_name,
             },
             queue=queue_name,
+            priority=5,  # lower than DOCX (0) so DOCX conversions run first
         )
     except Exception as e:
         logger.exception(f"Failed to enqueue task for job {job_id} to queue '{queue_name}': {e}")

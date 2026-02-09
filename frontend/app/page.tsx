@@ -13,7 +13,7 @@ export default function Home() {
             TailorTom
           </h1>
           <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
-            A free, open-source tool to help your LaTeX resume get past ATS systems. Because job applications shouldn&apos;t be this hard.
+            A free, open-source tool to get your resume past ATS. Use LaTeX or upload a Word doc—we optimize it for each job. Because applications shouldn&apos;t be this hard.
           </p>
           <div className="flex gap-4 justify-center pt-4">
             <Button asChild size="lg">
@@ -32,84 +32,84 @@ export default function Home() {
         <div className="grid md:grid-cols-3 gap-6">
           <Card>
             <CardHeader>
+              <CardTitle>Word or LaTeX</CardTitle>
+              <CardDescription>
+                Upload a .docx or paste LaTeX—we convert and optimize
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                No LaTeX experience? Upload your Word resume and we&apos;ll convert it to LaTeX. Already use LaTeX? Paste it in. Either way, you get a single template optimized per job.
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle>ATS Keyword Optimization</CardTitle>
               <CardDescription>
-                Automatically incorporates relevant keywords from job descriptions
+                Relevant keywords from job descriptions, no hallucination
               </CardDescription>
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground">
-                The AI analyzes your resume and the job description, then rephrases bullet points to naturally incorporate relevant keywords while keeping your original content intact.
+                The AI rephrases your bullet points to incorporate relevant keywords from the job description while keeping line counts and your original content intact. It never invents experiences.
               </p>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>Page Count Control</CardTitle>
+              <CardTitle>Line-Count Preservation</CardTitle>
               <CardDescription>
-                Ensures your resume fits your target page count
+                Layout stays the same; only wording changes
               </CardDescription>
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground">
-                Using a compile-and-feedback loop, TailorTom helps your resume fit within your target page count, condensing content when needed.
+                We compile and verify: if a change would break your layout (e.g., 2 lines → 3), we revert and retry with feedback. Your page count and bullet lengths stay under your control.
               </p>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>No Hallucination</CardTitle>
+              <CardTitle>Diff &amp; PDF</CardTitle>
               <CardDescription>
-                Only rephrases existing content - never invents new experiences
+                See what changed, then download
               </CardDescription>
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground">
-                TailorTom only rephrases what you&apos;ve already written - it never invents new experiences or skills. Your content stays authentic and accurate.
+                Side-by-side PDF comparison with highlights and word-level diffs. Edit LaTeX in the app, preview PDF on save and on load, and download when ready.
               </p>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>Diff Visualization</CardTitle>
+              <CardTitle>Job Queue</CardTitle>
               <CardDescription>
-                See exactly what changed between original and optimized versions
+                Multiple jobs, notifications, one place
               </CardDescription>
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground">
-                See exactly what changed with detailed diff comparisons, showing word-level modifications so you know what was tweaked.
+                Queue several optimizations, get desktop and in-app notifications when they finish, and manage everything from the Jobs page.
               </p>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>PDF Export</CardTitle>
+              <CardTitle>Free &amp; Open Source</CardTitle>
               <CardDescription>
-                Get both optimized LaTeX source and compiled PDF
+                No sign-up required; run locally or deploy yourself
               </CardDescription>
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground">
-                Download your optimized resume as a PDF, or edit the LaTeX source directly in the app if you want to make tweaks before downloading.
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Easy to Use</CardTitle>
-              <CardDescription>
-                Simple workflow for managing multiple optimization jobs
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground">
-                Queue multiple jobs, track progress, and manage all your optimized resumes in one place.
+                TailorTom is MIT-licensed. Use it in the browser, self-host with your own API key, or contribute on GitHub.
               </p>
             </CardContent>
           </Card>
@@ -127,7 +127,7 @@ export default function Home() {
             <div>
               <h3 className="text-xl font-semibold mb-2">Set Up Your Resume</h3>
               <p className="text-muted-foreground">
-                Upload your LaTeX resume template and configure your preferences (target pages, max iterations).
+                In Settings: paste LaTeX or upload a Word (.docx) resume. We convert Word to LaTeX and show a live PDF preview. Set target pages and optimization options.
               </p>
             </div>
           </div>
@@ -151,7 +151,7 @@ export default function Home() {
             <div>
               <h3 className="text-xl font-semibold mb-2">AI Optimization</h3>
               <p className="text-sm text-muted-foreground">
-                The AI analyzes your resume and the job description, then optimizes your content for ATS compatibility while keeping your content authentic.
+                Our pipeline compiles your resume, extracts line-count constraints, and uses the AI to rephrase bullets with job keywords. It compiles again to verify layout and retries with feedback if needed.
               </p>
             </div>
           </div>
@@ -161,9 +161,9 @@ export default function Home() {
               4
             </div>
             <div>
-              <h3 className="text-xl font-semibold mb-2">Review & Download</h3>
+              <h3 className="text-xl font-semibold mb-2">Review &amp; Download</h3>
               <p className="text-muted-foreground">
-                Review the optimized resume, see what changed, make any final edits if needed, and download the PDF ready to submit.
+                View the diff, edit LaTeX if you want, and download the optimized PDF. Filenames use your name and the company so you can keep track.
               </p>
             </div>
           </div>
@@ -178,13 +178,10 @@ export default function Home() {
           </CardHeader>
           <CardContent className="space-y-4">
             <p className="text-muted-foreground">
-              I built TailorTom as a fun side project after realizing how frustrating it is to get past ATS systems. 
-              It&apos;s incredibly disheartening when great candidates never get their resumes seen because an automated 
-              system filtered them out. So I decided to build something that could help.
+              I built TailorTom after realizing how hard it is to get past ATS systems. Great candidates often never get seen because a bot filtered them out. So I built a tool that optimizes your resume for each job—whether you use LaTeX or Word—without inventing content or breaking your layout.
             </p>
             <p className="text-muted-foreground">
-              This is completely free and open source. I wanted to make it available to anyone who needs it, 
-              because job searching is hard enough without having to game automated systems.
+              It&apos;s free and open source. No sign-up required. Use it in the browser or self-host with your own API key. Job searching is hard enough without having to game automated systems.
             </p>
             <div className="pt-4 space-y-4">
               <div>

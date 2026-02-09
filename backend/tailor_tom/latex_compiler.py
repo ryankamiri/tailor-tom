@@ -189,12 +189,16 @@ def _extract_latex_error(latex_log: str) -> str:
 def compile_latex(
     content: str,
     timeout: Optional[int] = None,
+    halt_on_error: bool = True,
 ) -> CompileResult:
     """Compile LaTeX content to PDF and return the result.
 
     Args:
         content: LaTeX document content as a string.
         timeout: Compilation timeout in seconds. Defaults to settings.compile_timeout.
+        halt_on_error: If True (default), pass -halt-on-error so the engine stops on
+            the first error (strict mode). If False, the engine continues past errors
+            and may still produce a PDF (Overleaf-like "compile despite errors" mode).
 
     Returns:
         CompileResult containing PDF bytes, page count, and any errors.
@@ -232,17 +236,21 @@ def compile_latex(
         tex_path.write_text(content, encoding="utf-8")
 
         try:
+            # Build command: -halt-on-error stops on first error (strict); omit for Overleaf-like behavior
+            cmd = [
+                engine_path,
+                "-interaction=nonstopmode",
+                "-output-directory",
+                str(tmpdir_path),
+                str(tex_path),
+            ]
+            if halt_on_error:
+                cmd.insert(2, "-halt-on-error")
+
             # Run LaTeX engine twice to resolve references
             for _ in range(2):
                 result = subprocess.run(
-                    [
-                        engine_path,
-                        "-interaction=nonstopmode",
-                        "-halt-on-error",
-                        "-output-directory",
-                        str(tmpdir_path),
-                        str(tex_path),
-                    ],
+                    cmd,
                     capture_output=True,
                     timeout=timeout,
                     cwd=tmpdir_path,

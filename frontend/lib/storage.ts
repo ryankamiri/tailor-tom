@@ -1,6 +1,6 @@
 /** localStorage helpers for TailorTom. */
 
-import { STORAGE_PREFIX, MAX_JOBS, JOB_STORAGE_KEY, JOB_MAX_AGE_DAYS, ADMIN_RESUMES_STORAGE_KEY, DAILY_JOB_LIMIT, DAILY_JOB_COMPLETIONS_KEY } from './constants';
+import { STORAGE_PREFIX, MAX_JOBS, JOB_STORAGE_KEY, JOB_MAX_AGE_DAYS, ADMIN_RESUMES_STORAGE_KEY, DAILY_JOB_LIMIT, DAILY_JOB_COMPLETIONS_KEY, type TargetPages, DEFAULT_TARGET_PAGES, parseTargetPages } from './constants';
 
 export interface StoredJob {
   jobId: string;
@@ -8,7 +8,7 @@ export interface StoredJob {
   createdAt: string; // ISO timestamp
   completedAt?: string | null; // ISO timestamp (optional, only for completed/failed jobs)
   companyName: string | null;
-  targetPages: number;
+  targetPages: TargetPages;
   originalLatex: string; // Store for diff comparison
   optimizedLatex?: string | null; // Store optimized LaTeX (only for completed jobs, stored after fetching from backend)
   filename?: string | null; // Store filename for completed jobs
@@ -62,7 +62,7 @@ export function getUserId(): string {
 export interface UserSettings {
   first_name: string;
   last_name: string;
-  target_pages: number;
+  target_pages: TargetPages;
   max_iterations: number;
   max_bullet_lines: number;
 }
@@ -72,16 +72,16 @@ export function getSettings(): UserSettings {
     return {
       first_name: '',
       last_name: '',
-      target_pages: 1,
+      target_pages: DEFAULT_TARGET_PAGES,
       max_iterations: 3,
       max_bullet_lines: 2,
     };
   }
-  
+
   return {
     first_name: localStorage.getItem(`${STORAGE_PREFIX}first_name`) || '',
     last_name: localStorage.getItem(`${STORAGE_PREFIX}last_name`) || '',
-    target_pages: parseInt(localStorage.getItem(`${STORAGE_PREFIX}target_pages`) || '1'),
+    target_pages: parseTargetPages(localStorage.getItem(`${STORAGE_PREFIX}target_pages`) || '1'),
     max_iterations: parseInt(localStorage.getItem(`${STORAGE_PREFIX}max_iterations`) || '3'),
     max_bullet_lines: parseInt(localStorage.getItem(`${STORAGE_PREFIX}max_bullet_lines`) || '2'),
   };
@@ -111,7 +111,14 @@ export function getStoredJobs(): StoredJob[] {
   if (!stored) return [];
   
   try {
-    return JSON.parse(stored);
+    const parsed: unknown[] = JSON.parse(stored);
+    return parsed.map((j) => {
+      const job = j as Record<string, unknown>;
+      return {
+        ...job,
+        targetPages: parseTargetPages(job?.targetPages),
+      } as StoredJob;
+    });
   } catch {
     return [];
   }

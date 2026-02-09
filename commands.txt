@@ -31,7 +31,7 @@ source .venv/bin/activate && cd backend && uvicorn api.main:app --reload
 # LOCAL DEV: Use --pool=solo to avoid SIGSEGV. PyMuPDF (fitz) can segfault
 # in forked workers on macOS; solo runs the task in the main process.
 
-# Terminal 3: Run Celery worker with auto-reload (solo pool = no fork, avoids PyMuPDF segfault on macOS)
+# Terminal 3: Run Celery worker with auto-reload (optimization + DOCX; DOCX has higher priority; solo pool = no fork on macOS)
 source .venv/bin/activate && cd backend && watchfiles --filter python 'celery -A api.worker worker --loglevel=info --concurrency=1 -Q local --pool=solo'
 
 # Alternative: Run worker without auto-reload (still use --pool=solo on macOS to avoid SIGSEGV)
@@ -79,4 +79,4 @@ cd frontend && npm run dev
 source .venv/bin/activate && cd backend && uvicorn api.main:app --reload
 
 # Terminal 3:
-source .venv/bin/activate && cd backend && watchfiles --filter python 'celery -A api.worker worker --loglevel=info --concurrency=1 -Q local'
+source .venv/bin/activate && cd backend && watchfiles --filter python 'celery -A api.worker worker --loglevel=info --concurrency=1 -Q local --pool=solo'
