@@ -1,0 +1,77 @@
+# TailorTom: API + Celery worker + Redis + Caddy (e.g. on a VPS)
+# From repo root: docker compose up -d --build
+# For https://api.tailortom.org, point DNS to this host and run with Caddy.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: tailortom-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_QUEUE_NAME: ${CELERY_QUEUE_NAME:-hosted}
+    depends_on:
+      redis:
+        condition: service_started
+    networks:
+      - tailortom
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: tailortom-worker
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - "celery -A api.worker worker --loglevel=info --concurrency=$${CELERY_WORKER_CONCURRENCY:-4} --queues=$${CELERY_QUEUE_NAME:-hosted}"
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_QUEUE_NAME: ${CELERY_QUEUE_NAME:-hosted}
+      CELERY_WORKER_CONCURRENCY: ${CELERY_WORKER_CONCURRENCY:-4}
+    depends_on:
+      redis:
+        condition: service_started
+    networks:
+      - tailortom
+
+  redis:
+    image: redis:7-alpine
+    container_name: tailortom-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - tailortom
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: tailortom-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+    depends_on:
+      api:
+        condition: service_started
+    networks:
+      - tailortom
+
+volumes:
+  redis_data:
+  caddy_data:
+
+networks:
+  tailortom:
+    driver: bridge

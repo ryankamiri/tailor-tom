@@ -1,0 +1,4 @@
+# api.tailortom.org -> API container (HTTPS via Let's Encrypt)
+api.tailortom.org {
+    reverse_proxy api:8000
+}
