@@ -1,4 +1,4 @@
-# TailorTom: API + Celery worker + Redis + Caddy (e.g. on a VPS)
+# TailorTom: API + Celery worker + Redis + Postgres + Caddy (e.g. on a VPS)
 # From repo root: docker compose up -d --build
 # For https://api.tailortom.org, point DNS to this host and run with Caddy.
 
@@ -15,9 +15,12 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
       CELERY_QUEUE_NAME: ${CELERY_QUEUE_NAME:-hosted}
+      DATABASE_URL: ${DATABASE_URL}
     depends_on:
       redis:
         condition: service_started
+      postgres:
+        condition: service_healthy
     networks:
       - tailortom
 
@@ -36,9 +39,30 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_QUEUE_NAME: ${CELERY_QUEUE_NAME:-hosted}
       CELERY_WORKER_CONCURRENCY: ${CELERY_WORKER_CONCURRENCY:-4}
+      DATABASE_URL: ${DATABASE_URL}
     depends_on:
       redis:
         condition: service_started
+      postgres:
+        condition: service_healthy
+    networks:
+      - tailortom
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tailortom-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tailortom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-tailortom}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     networks:
       - tailortom
 
@@ -69,6 +93,7 @@ services:
       - tailortom
 
 volumes:
+  postgres_data:
   redis_data:
   caddy_data:
 

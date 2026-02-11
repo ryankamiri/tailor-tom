@@ -1,6 +1,6 @@
 # VPS Deployment (TailorTom Backend)
 
-Deploy the API, Celery worker, Redis, and Caddy on a single VPS (e.g. DigitalOcean Droplet). The frontend stays on Vercel and calls `https://api.tailortom.org`.
+Deploy the API, Celery worker, Redis, Postgres, and Caddy on a single VPS (e.g. DigitalOcean Droplet). The frontend stays on Vercel and calls `https://api.tailortom.org`.
 
 ---
 
@@ -99,12 +99,20 @@ Then only Caddy (on the same host) can reach the API.
    git clone https://github.com/your-org/TailorTom.git /opt/tailortom
    cd /opt/tailortom
    cp env.vps.example .env
-   # Edit .env: OPENAI_API_KEY, ADMIN_PASSWORD, REDIS_URL=redis://redis:6379/0, CELERY_QUEUE_NAME=hosted
+   # Edit .env: OPENAI_API_KEY, ADMIN_PASSWORD, REDIS_URL=redis://redis:6379/0,
+   # CELERY_QUEUE_NAME=hosted, POSTGRES_PASSWORD, DATABASE_URL (see below)
    ```
 
-3. Start the stack:
+3. **Database (PostgreSQL):** In `.env` set a strong Postgres password and the connection URL:
+   - `POSTGRES_USER=tailortom` (or leave default)
+   - `POSTGRES_PASSWORD=<strong-password>`
+   - `POSTGRES_DB=tailortom`
+   - `DATABASE_URL=postgresql://tailortom:<same-password>@postgres:5432/tailortom`
+   Schema is created by SQLAlchemy + Alembic (run `alembic upgrade head` on first deploy, or from API startup).
+
+4. Start the stack:
    ```bash
    docker compose up -d --build
    ```
 
-4. Configure GitHub Actions and DNS as in sections 1 and 3 above.
+5. Configure GitHub Actions and DNS as in sections 1 and 3 above.
