@@ -46,8 +46,6 @@ services:
     image: redis:7-alpine
     container_name: tailortom-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"  # expose for one-time Redis migration from Upstash; remove after migration
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
