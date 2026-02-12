@@ -3,6 +3,8 @@
 .env.local
 .env.*.local
 
+docs/backend-db-auth-context.md
+
 # Python
 __pycache__/
 *.py[cod]
