@@ -48,7 +48,6 @@ def optimize_resume_v3(
     job_description: str,
     target_pages: int = 1,
     max_iterations: int = 3,
-    max_bullet_lines: int = 2,
     job_id: Optional[str] = None,
 ) -> V3OptimizationResult:
     """Run V3 Stage 0-3. No V2 logic; chooser is sole authority. Hard fail before Stage 3 if any bullet has zero feasible generated."""
@@ -241,7 +240,6 @@ def optimize_resume_v3(
         choices,
         option_id_to_latex,
         target_pages,
-        max_bullet_lines,
     )
 
     if not success:

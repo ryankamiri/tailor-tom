@@ -40,8 +40,6 @@ from api.storage import get_redis_client
 from tailor_tom.config import settings
 from tailor_tom.constants import (
     DAILY_JOB_LIMIT,
-    USER_SETTINGS_MAX_BULLET_LINES_MAX,
-    USER_SETTINGS_MAX_BULLET_LINES_MIN,
     USER_SETTINGS_MAX_ITERATIONS_MAX,
     USER_SETTINGS_MAX_ITERATIONS_MIN,
     USER_SETTINGS_TARGET_PAGES_MAX,
@@ -345,7 +343,6 @@ def _user_to_dict(user: User) -> dict:
         "resume_latex": user.resume_latex,
         "max_iterations": user.max_iterations,
         "target_pages": user.target_pages,
-        "max_bullet_lines": user.max_bullet_lines,
         "daily_job_limit": DAILY_JOB_LIMIT,
         "daily_completions_today": daily_completions_today,
         "active_jobs_count": user.active_jobs_count,
@@ -369,7 +366,6 @@ class UpdateMeRequest(BaseModel):
     resume_latex: str | None = None
     max_iterations: int | None = None
     target_pages: int | None = None
-    max_bullet_lines: int | None = None
 
 
 @router.patch("/me")
@@ -399,13 +395,6 @@ async def update_me(
                 detail=f"target_pages must be between {USER_SETTINGS_TARGET_PAGES_MIN} and {USER_SETTINGS_TARGET_PAGES_MAX}",
             )
         current_user.target_pages = body.target_pages
-    if body.max_bullet_lines is not None:
-        if not USER_SETTINGS_MAX_BULLET_LINES_MIN <= body.max_bullet_lines <= USER_SETTINGS_MAX_BULLET_LINES_MAX:
-            raise HTTPException(
-                status_code=400,
-                detail=f"max_bullet_lines must be between {USER_SETTINGS_MAX_BULLET_LINES_MIN} and {USER_SETTINGS_MAX_BULLET_LINES_MAX}",
-            )
-        current_user.max_bullet_lines = body.max_bullet_lines
 
     db.commit()
     db.refresh(current_user)

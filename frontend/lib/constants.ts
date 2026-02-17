@@ -16,10 +16,6 @@ export function parseTargetPages(value: unknown): TargetPages {
   return DEFAULT_TARGET_PAGES;
 }
 
-// Bullet lines configuration
-export const MIN_BULLET_LINES = 1;
-export const MAX_BULLET_LINES = 5;
-
 // DOCX upload (Settings)
 export const MAX_DOCX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
@@ -41,4 +37,3 @@ export const STATUS_LABELS = {
 
 // Job polling (active jobs: pending + processing)
 export const JOB_POLL_INTERVAL_SECONDS = 20;
-

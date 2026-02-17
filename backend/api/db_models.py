@@ -79,7 +79,6 @@ class User(Base):
     # User-level defaults / settings
     max_iterations: Mapped[int] = mapped_column(Integer, default=3, server_default=text("3"))
     target_pages: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
-    max_bullet_lines: Mapped[int] = mapped_column(Integer, default=2, server_default=text("2"))
 
     # Daily job limit counters (UTC date; None or past date = 0 completed today)
     daily_completions_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -142,7 +141,6 @@ class Job(Base):
     target_pages: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
     max_iterations: Mapped[int] = mapped_column(Integer, default=3, server_default=text("3"))
     job_description: Mapped[str] = mapped_column(Text, nullable=False)
-    max_bullet_lines: Mapped[int] = mapped_column(Integer, default=2, server_default=text("2"))
     first_name: Mapped[str] = mapped_column(String(255), nullable=False)
     last_name: Mapped[str] = mapped_column(String(255), nullable=False)
 

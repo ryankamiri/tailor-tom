@@ -223,7 +223,6 @@ def apply_and_verify(
     choices: dict[int, str],
     option_id_to_latex: dict[str, str],
     target_pages: int,
-    max_bullet_lines: int,
 ) -> tuple[bool, str, Optional[bytes], int, bool, str]:
     """Apply choices, compile, run quality check.
     Returns (success, error_message, pdf_bytes, page_count, quality_passes, quality_issues_summary).
@@ -241,7 +240,6 @@ def apply_and_verify(
     quality = check_quality(
         pdf_bytes=compile_result.pdf_bytes or b"",
         target_pages=target_pages,
-        max_bullet_lines=max_bullet_lines,
         latex=final_latex,
     )
     return (

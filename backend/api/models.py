@@ -15,7 +15,6 @@ class OptimizationRequest(BaseModel):
     last_name: str = Field(..., description="Last name for filename generation")
     company_name: str = Field(..., description="Company name for this job application")
     max_iterations: Optional[int] = Field(3, ge=2, le=5, description="Optimization search budget (default: 3, min: 2, max: 5). Controls bundle pool and fine ATS evaluations.")
-    max_bullet_lines: int = Field(2, ge=1, le=5, description="Maximum lines per bullet point (default: 2, min: 1, max: 5)")
 
 
 class OptimizationResponse(BaseModel):
@@ -103,4 +102,3 @@ class DiffResponse(BaseModel):
     
     items: list[DiffItem]
     summary: DiffSummary
-

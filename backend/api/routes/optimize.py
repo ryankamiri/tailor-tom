@@ -72,7 +72,6 @@ async def create_optimization_job(
         target_pages=request.target_pages,
         max_iterations=request.max_iterations or 3,
         job_description=request.job_description,
-        max_bullet_lines=request.max_bullet_lines,
         first_name=request.first_name,
         last_name=request.last_name,
     )

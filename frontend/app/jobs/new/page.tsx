@@ -63,7 +63,6 @@ function NewJobContent() {
         job_description: jobDescription,
         target_pages: targetPages,
         max_iterations: user.max_iterations,
-        max_bullet_lines: user.max_bullet_lines,
         first_name: user.first_name || '',
         last_name: user.last_name || '',
         company_name: companyName,

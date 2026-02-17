@@ -62,13 +62,6 @@ class Settings(BaseSettings):
         description="[Deprecated] Maximum iterations - now configured via frontend settings",
     )
     
-    max_bullet_lines: int = Field(
-        default=2,
-        ge=1,
-        le=5,
-        description="[Deprecated] Maximum lines per bullet point - now configured via frontend settings",
-    )
-
     # LaTeX Compilation Settings
     compile_timeout: int = Field(
         default=30,

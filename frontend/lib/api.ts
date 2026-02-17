@@ -46,7 +46,6 @@ export interface OptimizationRequest {
   last_name: string;
   company_name: string;
   max_iterations?: number;
-  max_bullet_lines: number;
 }
 
 /** V3 analysis payload (from analysis_json). */
@@ -157,7 +156,6 @@ export interface UserProfile {
   resume_latex: string | null;
   max_iterations: number;
   target_pages: number;
-  max_bullet_lines: number;
   /** Max completed + active jobs per day (UTC). */
   daily_job_limit: number;
   /** Completed jobs today (UTC). */
@@ -184,7 +182,7 @@ export async function fetchMe(): Promise<UserProfile> {
 
 /** Partial-update the authenticated user's editable fields. */
 export async function updateMe(
-  fields: Partial<Pick<UserProfile, 'resume_latex' | 'max_iterations' | 'target_pages' | 'max_bullet_lines'>>,
+  fields: Partial<Pick<UserProfile, 'resume_latex' | 'max_iterations' | 'target_pages'>>,
 ): Promise<UserProfile> {
   const res = await authFetch(`${API_BASE}/auth/me`, {
     method: 'PATCH',

@@ -63,7 +63,6 @@ def _job_to_legacy_dict(job: Job) -> dict[str, Any]:
     detail.update(
         {
             "job_description": job.job_description,
-            "max_bullet_lines": job.max_bullet_lines,
             "first_name": job.first_name,
             "last_name": job.last_name,
             "original_latex": job.original_latex,
@@ -112,7 +111,6 @@ def create_job(job_id: str, job_data: dict[str, Any]) -> None:
             target_pages=int(job_data.get("target_pages") or 1),
             max_iterations=int(job_data.get("max_iterations") or 3),
             job_description=job_data["job_description"],
-            max_bullet_lines=int(job_data.get("max_bullet_lines") or 2),
             first_name=job_data["first_name"],
             last_name=job_data["last_name"],
         )

@@ -377,7 +377,6 @@ def optimize_resume_task(self, job_id: str):
             if debug_enabled():
                 debug_log(logger, "max_iterations_fallback", raw=_max_iter_raw, fallback=3)
             max_iterations = 3
-        max_bullet_lines = int(job.get("max_bullet_lines") or 2)
         first_name = (job.get("first_name") or "").strip() or "User"
         last_name = (job.get("last_name") or "").strip() or "Unknown"
         company_name = (job.get("company_name") or "").strip()
@@ -390,7 +389,6 @@ def optimize_resume_task(self, job_id: str):
                 job_id=job_id,
                 target_pages=target_pages,
                 max_iterations=max_iterations,
-                max_bullet_lines=max_bullet_lines,
                 company_name=company_name or "(none)",
                 queue=settings.celery_queue_name,
             )
@@ -409,7 +407,6 @@ def optimize_resume_task(self, job_id: str):
             job_description=job_description,
             target_pages=target_pages,
             max_iterations=max_iterations,
-            max_bullet_lines=max_bullet_lines,
             job_id=job_id,
         )
 

@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LatexEditor } from '@/components/editor/latex-editor';
 import { validateLatex, compileLatexToPdf, updateMe } from '@/lib/api';
-import { MIN_BULLET_LINES, MAX_BULLET_LINES, TARGET_PAGES_OPTIONS, parseTargetPages } from '@/lib/constants';
+import { TARGET_PAGES_OPTIONS, parseTargetPages } from '@/lib/constants';
 import { toast } from 'sonner';
 import { Loader2, FileUp, HelpCircle } from 'lucide-react';
 import { DocxUploadDialog } from '@/components/settings/docx-upload-dialog';
@@ -19,7 +19,6 @@ export function SettingsForm() {
   // Local form state — initialised from user profile once loaded
   const [targetPages, setTargetPages] = useState(user?.target_pages ?? 1);
   const [maxIterations, setMaxIterations] = useState(user?.max_iterations ?? 3);
-  const [maxBulletLines, setMaxBulletLines] = useState(user?.max_bullet_lines ?? 2);
   const [latex, setLatex] = useState(user?.resume_latex ?? '');
 
   const [isSaving, setIsSaving] = useState(false);
@@ -36,7 +35,6 @@ export function SettingsForm() {
     if (!user) return;
     setTargetPages(user.target_pages);
     setMaxIterations(user.max_iterations);
-    setMaxBulletLines(user.max_bullet_lines);
     setLatex(user.resume_latex ?? '');
     setIsInitialLoad(false);
   }, [user]);
@@ -84,7 +82,6 @@ export function SettingsForm() {
         const updated = await updateMe({
           target_pages: targetPages,
           max_iterations: maxIterations,
-          max_bullet_lines: maxBulletLines,
         });
         setUserFromProfile(updated);
       } catch (err) {
@@ -95,7 +92,7 @@ export function SettingsForm() {
     return () => {
       if (autoSaveRef.current) clearTimeout(autoSaveRef.current);
     };
-  }, [targetPages, maxIterations, maxBulletLines, isInitialLoad, setUserFromProfile]);
+  }, [targetPages, maxIterations, isInitialLoad, setUserFromProfile]);
 
   // -----------------------------------------------------------------------
   // Explicit save — validates + persists LaTeX template
@@ -151,7 +148,7 @@ export function SettingsForm() {
           <CardDescription>Configure default optimization parameters</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <div className="flex items-center gap-1.5">
                 <Label htmlFor="target-pages">Target Pages</Label>
@@ -180,10 +177,10 @@ export function SettingsForm() {
             </div>
             <div className="space-y-2">
               <div className="flex items-center gap-1.5">
-                <Label htmlFor="max-iterations">Optimization search depth</Label>
+                <Label htmlFor="max-iterations">Max Iterations</Label>
                 <span
                   className="inline-flex text-muted-foreground hover:text-foreground cursor-help"
-                  title="Search budget for bundle selection. Higher values allow more candidate bundles to be evaluated (may improve quality, longer run)."
+                  title="Maximum optimization iterations. Higher values allow more candidate-regeneration rounds (may improve quality, longer run)."
                 >
                   <HelpCircle className="h-3.5 w-3.5" />
                 </span>
@@ -197,35 +194,6 @@ export function SettingsForm() {
                 </SelectTrigger>
                 <SelectContent>
                   {[2, 3, 4, 5].map((n) => (
-                    <SelectItem key={n} value={n.toString()}>
-                      {n}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <div className="flex items-center gap-1.5">
-                <Label htmlFor="max-bullet-lines">Max Bullet Lines</Label>
-                <span
-                  className="inline-flex text-muted-foreground hover:text-foreground cursor-help"
-                  title="Maximum lines allowed per bullet in the optimized resume."
-                >
-                  <HelpCircle className="h-3.5 w-3.5" />
-                </span>
-              </div>
-              <Select
-                value={maxBulletLines.toString()}
-                onValueChange={(v) => setMaxBulletLines(parseInt(v))}
-              >
-                <SelectTrigger id="max-bullet-lines">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {Array.from(
-                    { length: MAX_BULLET_LINES - MIN_BULLET_LINES + 1 },
-                    (_, i) => i + MIN_BULLET_LINES,
-                  ).map((n) => (
                     <SelectItem key={n} value={n.toString()}>
                       {n}
                     </SelectItem>

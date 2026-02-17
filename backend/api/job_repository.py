@@ -118,7 +118,6 @@ def create_job(
     target_pages: int,
     max_iterations: int,
     job_description: str,
-    max_bullet_lines: int,
     first_name: str,
     last_name: str,
 ) -> Job:
@@ -131,7 +130,6 @@ def create_job(
         target_pages=target_pages,
         max_iterations=max_iterations,
         job_description=job_description,
-        max_bullet_lines=max_bullet_lines,
         first_name=first_name,
         last_name=last_name,
     )
