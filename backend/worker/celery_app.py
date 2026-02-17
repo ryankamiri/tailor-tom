@@ -40,7 +40,7 @@ celery_app = Celery(
     "tailortom",
     broker=broker_url,
     backend=backend_url,
-    include=["api.tasks"],
+    include=["worker.tasks"],
     broker_connection_retry_on_startup=True,
 )
 
@@ -74,8 +74,7 @@ celery_app.conf.update(
     # Result backend
     result_expires=3600,  # Results expire after 1 hour
     
-    # Worker configuration
-    worker_max_tasks_per_child=50,  # Restart worker after 50 tasks (memory management)
+    worker_max_tasks_per_child=settings.worker_max_tasks_per_child,
     worker_disable_rate_limits=False,
     
     # Broker transport options - optimize Redis connection usage
@@ -109,10 +108,10 @@ celery_app.conf.update(
     # Queue routing configuration
         # Both task types use the same queue; DOCX gets higher priority via apply_async(priority=0).
     task_routes={
-        'api.tasks.optimize_resume_task': {
+        'worker.tasks.optimize_resume_task': {
             'queue': queue_name,
         },
-        'api.tasks.convert_docx_task': {
+        'worker.tasks.convert_docx_task': {
             'queue': queue_name,
         },
     },
@@ -123,4 +122,3 @@ celery_app.conf.update(
 )
 
 logger.info(f"Celery app configured with broker: {redis_url[:20]}...")
-

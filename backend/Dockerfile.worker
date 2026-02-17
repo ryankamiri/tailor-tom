@@ -1,3 +1,6 @@
+# Optional standalone worker image. Docker Compose uses backend/Dockerfile for both
+# API and worker (same image; worker overrides CMD). Use this file only if you
+# build the worker image separately (e.g. different base or no API entrypoint).
 FROM python:3.10-slim
 
 # Install LaTeX engines (xelatex, lualatex, pdflatex) and required packages
@@ -37,5 +40,5 @@ COPY backend/ /app/
 # Concurrency is set via CELERY_WORKER_CONCURRENCY env var (default: 3).
 # Queue name is set via CELERY_QUEUE_NAME env var (default: 'default').
 # For hosted: CELERY_QUEUE_NAME=hosted. For local: CELERY_QUEUE_NAME=local.
-CMD celery -A api.worker worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-3} --queues=${CELERY_QUEUE_NAME:-default}
+CMD celery -A worker.app worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-3} --queues=${CELERY_QUEUE_NAME:-default}
 

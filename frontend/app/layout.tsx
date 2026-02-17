@@ -4,7 +4,9 @@ import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/layout/theme-provider";
 import { Navbar } from "@/components/layout/navbar";
+import { SiteAnnouncementBanner } from "@/components/layout/site-announcement-banner";
 import { JobPollingProvider } from "@/components/jobs/job-polling-provider";
+import { AuthProvider } from "@/contexts/auth-context";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -32,10 +34,13 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <ThemeProvider>
-          <JobPollingProvider />
-          <Navbar />
-          {children}
-          <Toaster />
+          <AuthProvider>
+            <JobPollingProvider />
+            <SiteAnnouncementBanner />
+            <Navbar />
+            {children}
+            <Toaster />
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>

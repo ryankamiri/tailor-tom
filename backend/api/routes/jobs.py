@@ -1,134 +1,192 @@
-"""Job status endpoints."""
+"""Job endpoints backed by Postgres (source of truth)."""
 
 import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException
-from api.models import JobStatusResponse
-from api.storage import get_job, update_job_status, delete_job
-from api.celery_app import celery_app
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy.orm import Session
+
+from api.models import JobDetailAnalysis, JobStatusResponse
+from api.database import get_db
+from api.deps import CurrentUserIdentity, get_current_user_identity
+from api.cache import (
+    get_job_cache,
+    set_job_cache,
+    get_jobs_list_cache,
+    set_jobs_list_cache,
+    on_job_write_invalidate,
+)
+from api.job_repository import (
+    InvalidCursorError,
+    get_job_for_user,
+    list_jobs_for_user_cursor,
+    serialize_job_for_detail,
+    serialize_job_for_list,
+    update_job_status as repo_update_job_status,
+)
+from api.user_job_counts import decrement_active_jobs
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.ERROR)  # Only log errors for API endpoints
+logger.setLevel(logging.ERROR)
 router = APIRouter()
 
 
+_JobStatusLiteral = Literal["pending", "processing", "completed", "failed", "cancelled"]
+
+
+@router.get("/jobs")
+async def list_jobs(
+    limit: int = Query(default=20, ge=1, le=100),
+    cursor: str | None = Query(default=None),
+    status: list[_JobStatusLiteral] | None = Query(default=None),
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
+):
+    user_id_str = str(identity.user_id)
+    # Normalize: empty list or None → "all"; single/multiple → sorted comma-joined for cache key
+    if not status:
+        status_key = "all"
+        status_filter: _JobStatusLiteral | list[_JobStatusLiteral] | None = None
+    else:
+        status_key = ",".join(sorted(set(status)))
+        status_filter = list(status) if len(status) > 1 else status[0]
+
+    cached = get_jobs_list_cache(user_id_str, status_key, limit, cursor)
+    if cached:
+        return cached
+
+    try:
+        jobs, next_cursor = list_jobs_for_user_cursor(
+            db,
+            user_id=identity.user_id,
+            limit=limit,
+            cursor=cursor,
+            status=status_filter,
+        )
+    except InvalidCursorError:
+        raise HTTPException(status_code=400, detail="Invalid cursor")
+
+    payload = {
+        "items": [serialize_job_for_list(job) for job in jobs],
+        "next_cursor": next_cursor,
+    }
+    set_jobs_list_cache(user_id_str, status_key, limit, cursor, payload)
+    return payload
+
+
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
-async def get_job_status(job_id: str):
-    """Get the status of an optimization job."""
-    
-    job = get_job(job_id)
+async def get_job_status(
+    job_id: str,
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
+):
+    user_id_str = str(identity.user_id)
+    cached = get_job_cache(job_id)
+    if cached and cached.get("user_id") == user_id_str:
+        out = {k: v for k, v in cached.items() if k != "user_id"}
+        if isinstance(out.get("analysis"), dict):
+            try:
+                out["analysis"] = JobDetailAnalysis(**out["analysis"])
+            except Exception:
+                out["analysis"] = None
+                out["analysis_parse_failed"] = True
+        return JobStatusResponse(**out)
+
+    job = get_job_for_user(db, job_id, identity.user_id)
     if not job:
-        logger.error(f"Job not found: {job_id}")
         raise HTTPException(status_code=404, detail="Job not found")
-    
-    return JobStatusResponse(
-        job_id=job_id,
-        status=job["status"],
-        created_at=job["created_at"],
-        completed_at=job.get("completed_at"),
-        error_message=job.get("error_message"),
-        company_name=job.get("company_name"),
-        result=job.get("result"),
-    )
+
+    payload = serialize_job_for_detail(job)
+    cache_payload = {**payload, "user_id": user_id_str}
+    set_job_cache(job_id, cache_payload)
+
+    out = dict(payload)
+    if out.get("analysis") is not None:
+        try:
+            out["analysis"] = JobDetailAnalysis(**out["analysis"])
+        except Exception:
+            out["analysis"] = None
+            out["analysis_parse_failed"] = True
+    return JobStatusResponse(**out)
 
 
 @router.get("/jobs/{job_id}/latex")
-async def get_job_latex(job_id: str):
-    """Get the optimized LaTeX for a job (works for both completed and failed jobs with LaTeX)."""
-    
-    job = get_job(job_id)
+async def get_job_latex(
+    job_id: str,
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
+):
+    job = get_job_for_user(db, job_id, identity.user_id)
     if not job:
-        logger.error(f"Job not found for LaTeX retrieval: {job_id}")
         raise HTTPException(status_code=404, detail="Job not found")
-    
-    # Allow both completed and failed jobs to return LaTeX (if available)
-    if job["status"] not in ["completed", "failed"]:
-        logger.error(f"Job {job_id} status is {job['status']}, cannot retrieve LaTeX")
+
+    if job.status not in ["completed", "failed", "cancelled"]:
         raise HTTPException(
             status_code=400,
-            detail=f"Job is not completed or failed (status: {job['status']})",
+            detail=f"Job is not in a terminal state with result (status: {job.status})",
         )
-    
-    result = job.get("result")
-    if not result:
-        logger.error(f"Job {job_id} has no result data")
-        raise HTTPException(status_code=500, detail="Job result not available")
-    
-    optimized_latex = result.get("optimized_latex")
-    if not optimized_latex:
-        logger.error(f"Job {job_id} result has no optimized_latex field")
-        raise HTTPException(status_code=500, detail="Optimized LaTeX not available for this job")
-    
+
+    if not job.optimized_latex:
+        raise HTTPException(status_code=404, detail="Optimized LaTeX not available for this job")
+
     return {
         "job_id": job_id,
-        "latex": optimized_latex,
-        "filename": result.get("filename", "resume.pdf"),
+        "latex": job.optimized_latex,
+        "filename": job.result_filename or "resume.pdf",
     }
 
 
 @router.post("/jobs/{job_id}/cancel")
-async def cancel_job(job_id: str):
-    """Cancel a pending or processing job."""
-    
-    job = get_job(job_id)
+async def cancel_job(
+    job_id: str,
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
+):
+    job = get_job_for_user(db, job_id, identity.user_id)
     if not job:
-        logger.error(f"Job not found for cancellation: {job_id}")
         raise HTTPException(status_code=404, detail="Job not found")
-    
-    if job["status"] not in ["pending", "processing"]:
-        logger.error(f"Cannot cancel job {job_id} with status: {job['status']}")
+
+    if job.status not in ["pending", "processing"]:
         raise HTTPException(
-            status_code=400,
-            detail=f"Cannot cancel job with status: {job['status']}. Only pending or processing jobs can be cancelled.",
+            status_code=409,
+            detail=f"Cannot cancel job with status: {job.status}. Only pending or processing jobs can be cancelled.",
         )
-    
-    # Try to revoke the Celery task if it's still pending
-    try:
-        # Get the task ID from Celery (if available)
-        # Note: We'd need to store task_id with the job to revoke it properly
-        # For now, we'll just mark it as cancelled and let the task check the status
-        pass
-    except Exception as e:
-        logger.error(f"Failed to revoke Celery task for job {job_id}: {e}")
-    
-    # Update job status to cancelled
-    update_job_status(
-        job_id,
-        "failed",
-        completed_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+
+    repo_update_job_status(
+        db,
+        job=job,
+        status="cancelled",
+        completed_at=datetime.now(timezone.utc),
         error_message="Job cancelled by user",
     )
-    
-    return {"job_id": job_id, "status": "failed", "message": "Job cancelled successfully"}
+    decrement_active_jobs(db, identity.user_id)
+    db.commit()
+
+    on_job_write_invalidate(str(identity.user_id), job_id)
+
+    return {"job_id": job_id, "status": "cancelled"}
 
 
-@router.delete("/jobs/{job_id}")
-async def delete_job_endpoint(job_id: str):
-    """Delete a job (idempotent - returns 200 even if job doesn't exist)."""
-    
-    job = get_job(job_id)
+@router.delete("/jobs/{job_id}", status_code=204)
+async def delete_job_endpoint(
+    job_id: str,
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
+    db: Session = Depends(get_db),
+):
+    job = get_job_for_user(db, job_id, identity.user_id)
     if not job:
-        # Job doesn't exist - return success (idempotent operation)
-        # Don't log - this is expected behavior, not an error
-        return {"job_id": job_id, "message": "Job deleted successfully"}
-    
-    if job["status"] in ["pending", "processing"]:
-        logger.error(f"Cannot delete job {job_id} with status: {job['status']}")
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot delete job with status: {job['status']}. Please cancel the job first.",
-        )
-    
-    # Delete job from Redis
-    deleted = delete_job(job_id)
-    
-    if not deleted:
-        # Job exists but deletion failed - log error
-        logger.error(f"Failed to delete job {job_id} from Redis (job exists but deletion returned False)")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to delete job from Redis",
-        )
-    
-    return {"job_id": job_id, "message": "Job deleted successfully"}
+        raise HTTPException(status_code=404, detail="Job not found")
 
+    if job.status in ["pending", "processing"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete job with status: {job.status}. Please cancel the job first.",
+        )
+
+    db.delete(job)
+    db.commit()
+
+    on_job_write_invalidate(str(identity.user_id), job_id)
+
+    return Response(status_code=204)

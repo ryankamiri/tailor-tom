@@ -1,98 +1,74 @@
 'use client';
 
-import { useEffect } from 'react';
-import { getStoredJobs, updateJobStatus } from '@/lib/storage';
-import { getJobStatus } from '@/lib/api';
+import { useEffect, useRef } from 'react';
+import { listJobs, getJobStatus } from '@/lib/api';
 import { showJobCompleteNotification, showJobFailedNotification } from '@/lib/notifications';
+import { useAuth } from '@/contexts/auth-context';
+import { JOB_POLL_INTERVAL_SECONDS } from '@/lib/constants';
 
-/**
- * Global job polling provider that runs on all pages.
- * Polls for pending/processing jobs and shows notifications when they complete.
- * 
- * Optimizations:
- * - Polls every 60 seconds (1 minute) instead of 10 seconds to reduce Redis reads
- * - Automatically stops polling jobs that complete or fail (filtered out on next poll)
- */
 export function JobPollingProvider() {
+  const { user, isAuthenticated, refreshUser } = useAuth();
+  const previousStatusRef = useRef<Map<string, string>>(new Map());
+
   useEffect(() => {
+    if (!isAuthenticated) return;
+    if ((user?.active_jobs_count ?? 0) <= 0) return;
+
     const pollJobStatuses = async () => {
-      const jobs = getStoredJobs();
-      
-      // Only poll jobs that are pending or processing
-      // Completed/failed jobs are automatically excluded, so polling stops for them
-      const jobsToPoll = jobs.filter(
-        (job) => job.status === 'pending' || job.status === 'processing'
-      );
+      try {
+        const { items: activeJobs } = await listJobs({
+          limit: 100,
+          status: ['pending', 'processing'],
+        });
+        const seen = new Set<string>();
 
-      if (jobsToPoll.length === 0) {
-        return; // No jobs to poll - polling effectively stops
-      }
+        for (const job of activeJobs) {
+          seen.add(job.job_id);
+          previousStatusRef.current.set(job.job_id, job.status);
+        }
 
-      // Poll each job in parallel
-      await Promise.allSettled(
-        jobsToPoll.map(async (job) => {
+        const prevEntries = Array.from(previousStatusRef.current.entries());
+        for (const [jobId, oldStatus] of prevEntries) {
+          if (seen.has(jobId)) continue;
+
           try {
-            const status = await getJobStatus(job.jobId);
-            
-            // Update localStorage if status changed
-            if (status.status !== job.status) {
-              updateJobStatus(
-                job.jobId,
-                status.status,
-                status.company_name,
-                status.completed_at,
-                status.error_message
-              );
-              
-              // Show notification when job completes or fails
-              if (status.status === 'completed') {
-                showJobCompleteNotification(
-                  status.company_name || 'Your',
-                  job.jobId,
-                );
-              } else if (status.status === 'failed') {
-                showJobFailedNotification(
-                  status.company_name || 'Your',
-                  job.jobId,
-                  status.error_message || null,
-                );
+            const status = await getJobStatus(jobId);
+            if (status.status === 'completed' && oldStatus !== 'completed') {
+              showJobCompleteNotification(status.company_name || 'Your', jobId);
+              previousStatusRef.current.delete(jobId);
+              await refreshUser();
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('tailortom:job-status-changed', { detail: { jobId, status: 'completed' } }));
               }
+            } else if (status.status === 'failed' && oldStatus !== 'failed') {
+              showJobFailedNotification(status.company_name || 'Your', jobId, status.error_message || null);
+              previousStatusRef.current.delete(jobId);
+              await refreshUser();
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('tailortom:job-status-changed', { detail: { jobId, status: 'failed' } }));
+              }
+            } else if (status.status === 'cancelled') {
+              previousStatusRef.current.delete(jobId);
+              await refreshUser();
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('tailortom:job-status-changed', { detail: { jobId, status: 'cancelled' } }));
+              }
+            } else {
+              previousStatusRef.current.delete(jobId);
             }
           } catch (error) {
-            // Check if it's a 404 (job not found)
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            const isNotFound = errorMessage.includes('(404)') || errorMessage.toLowerCase().includes('not found');
-            
-            if (isNotFound) {
-              // Job doesn't exist on backend, mark as failed with server error
-              console.warn(`[JobPollingProvider] Job ${job.jobId} not found on backend (404), marking as failed`);
-              updateJobStatus(
-                job.jobId,
-                'failed',
-                job.companyName,
-                new Date().toISOString(),
-                'Internal server error: Job was deleted or lost on the server'
-              );
-            } else {
-              // Other errors, just log but don't change status
-              console.error(`[JobPollingProvider] Error polling job ${job.jobId}:`, error);
-            }
+            console.error(`[JobPollingProvider] Error checking status for job ${jobId}:`, error);
           }
-        })
-      );
+        }
+      } catch (error) {
+        console.error('[JobPollingProvider] Error polling job statuses:', error);
+      }
     };
 
-    // Poll immediately on mount
     pollJobStatuses();
+    const interval = setInterval(pollJobStatuses, JOB_POLL_INTERVAL_SECONDS * 1000);
+    return () => clearInterval(interval);
+  }, [isAuthenticated, user?.active_jobs_count, refreshUser]);
 
-    // Set up interval to poll every 60 seconds (1 minute)
-    const interval = setInterval(pollJobStatuses, 60000);
-
-    return () => {
-      clearInterval(interval);
-    };
-  }, []); // Run once on mount
-
-  return null; // This component doesn't render anything
+  return null;
 }
-

@@ -78,7 +78,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Frontend
+# Frontend / Node
+/node_modules/
 frontend/.next/
 frontend/out/
 frontend/.vercel/

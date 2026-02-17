@@ -6,27 +6,40 @@ import { JobForm } from '@/components/jobs/job-form';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { createOptimizationJob } from '@/lib/api';
-import { getSettings, getResumeLatex, saveJob, canCreateNewJob, StoredJob, canCreateJobWithinDailyLimit } from '@/lib/storage';
 import { requestNotificationPermission } from '@/lib/notifications';
 import { toast } from 'sonner';
 import { DailyLimitBadge } from '@/components/jobs/daily-limit-badge';
 import { AlertCircle } from 'lucide-react';
+import { RequireAuth } from '@/components/layout/require-auth';
+import { useAuth } from '@/contexts/auth-context';
+import { parseTargetPages } from '@/lib/constants';
 
-export default function NewJobPage() {
+function NewJobContent() {
   const router = useRouter();
+  const { user, refreshUser } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const dailyLimit = canCreateJobWithinDailyLimit();
+
+  const dailyLimitRemaining = user?.daily_limit_remaining ?? 0;
+  const canCreateByDailyLimit = dailyLimitRemaining > 0;
+  const canCreate = canCreateByDailyLimit;
+  const dailyLimitReason =
+    !canCreateByDailyLimit && user
+      ? `Daily limit reached. You have ${user.daily_completions_today} completed and ${user.active_jobs_count} pending/processing jobs (limit: ${user.daily_job_limit}). The limit resets at midnight UTC.`
+      : null;
 
   const handleSubmit = async (companyName: string, jobDescription: string) => {
     setIsLoading(true);
     setError(null);
 
     try {
-      // Validate prerequisites
-      const settings = getSettings();
-      const resumeLatex = getResumeLatex();
+      if (!user) {
+        setError('Not authenticated');
+        setIsLoading(false);
+        return;
+      }
 
+      const resumeLatex = user.resume_latex;
       if (!resumeLatex) {
         const errorMessage = 'Please set up your resume LaTeX template in Settings first.';
         setError(errorMessage);
@@ -35,51 +48,29 @@ export default function NewJobPage() {
         return;
       }
 
-      if (!settings.first_name || !settings.last_name) {
-        const errorMessage = 'Please set your first and last name in Settings first.';
-        setError(errorMessage);
-        toast.error(errorMessage);
-        setIsLoading(false);
-        return;
-      }
-
-      // Check if we can create a new job
-      const { canCreate, reason } = canCreateNewJob();
       if (!canCreate) {
-        setError(reason || 'Cannot create new job');
+        setError(dailyLimitReason || 'Cannot create new job');
         setIsLoading(false);
         return;
       }
 
-      // Request notification permission
       await requestNotificationPermission();
 
-      // Create optimization job
-      const response = await createOptimizationJob({
+      const targetPages = parseTargetPages(user.target_pages);
+
+      await createOptimizationJob({
         resume_latex: resumeLatex,
         job_description: jobDescription,
-        target_pages: settings.target_pages,
-        max_iterations: settings.max_iterations,
-        max_bullet_lines: settings.max_bullet_lines,
-        first_name: settings.first_name,
-        last_name: settings.last_name,
+        target_pages: targetPages,
+        max_iterations: user.max_iterations,
+        max_bullet_lines: user.max_bullet_lines,
+        first_name: user.first_name || '',
+        last_name: user.last_name || '',
         company_name: companyName,
       });
 
-      // Save job to localStorage
-      const newJob: StoredJob = {
-        jobId: response.job_id,
-        status: 'pending',
-        createdAt: response.created_at,
-        companyName: companyName,
-        targetPages: settings.target_pages,
-        originalLatex: resumeLatex,
-      };
-      saveJob(newJob);
-
+      await refreshUser();
       toast.success('Optimization job created successfully!');
-      
-      // Redirect to jobs page
       router.push('/jobs');
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to create optimization job';
@@ -103,12 +94,12 @@ export default function NewJobPage() {
           <DailyLimitBadge />
         </div>
 
-        {!dailyLimit.canCreate && (
+        {!canCreateByDailyLimit && user && (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>Daily Limit Reached</AlertTitle>
             <AlertDescription>
-              {dailyLimit.reason} The limit resets at midnight.
+              {dailyLimitReason}
             </AlertDescription>
           </Alert>
         )}
@@ -121,11 +112,11 @@ export default function NewJobPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <JobForm 
-              onSubmit={handleSubmit} 
-              isLoading={isLoading} 
+            <JobForm
+              onSubmit={handleSubmit}
+              isLoading={isLoading}
               error={error}
-              disabled={!dailyLimit.canCreate}
+              disabled={!canCreate}
             />
           </CardContent>
         </Card>
@@ -134,3 +125,10 @@ export default function NewJobPage() {
   );
 }
 
+export default function NewJobPage() {
+  return (
+    <RequireAuth>
+      <NewJobContent />
+    </RequireAuth>
+  );
+}

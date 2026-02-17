@@ -1,398 +1,222 @@
-# TailorTom - ATS Resume Optimizer
+# TailorTom — ATS Resume Optimizer
 
-TailorTom is a free and open-source full-stack web application that optimizes your resume for Applicant Tracking Systems (ATS). Start with LaTeX or upload a Word (.docx) resume—we convert it to LaTeX, then use DSPy and GPT to incorporate relevant keywords from job descriptions while keeping your resume within your target page count.
+TailorTom is a free, open-source full-stack app that optimizes your resume for Applicant Tracking Systems (ATS). Paste LaTeX or upload a Word (.docx) resume; we convert to LaTeX and use GPT to integrate keywords from job descriptions while preserving line counts and layout.
 
-## About
+**Created by:** [Ryan Amiri](https://x.com/RyanAmiri__) · [LinkedIn](https://www.linkedin.com/in/ryanamiri/) · [GitHub](https://github.com/ryankamiri/tailor-tom)
 
-I created TailorTom to help job seekers navigate the challenging ATS landscape. ATS systems can be difficult to crack, and getting your resume past them to reach human reviewers is often the hardest part of the job application process. This tool is designed to help optimize your resume for better ATS compatibility.
+---
 
-**Created by:** [Ryan Amiri](https://x.com/RyanAmiri__)  
-**LinkedIn:** [ryanamiri](https://www.linkedin.com/in/ryanamiri/)  
-**GitHub:** [ryankamiri/tailor-tom](https://github.com/ryankamiri/tailor-tom)
+## Architecture Overview
 
-This is an open-source project built for fun to help others with their job applications.
+Deployment is **API + Worker + Redis + Postgres**, with optional **Caddy** for TLS on a VPS.
 
-## Features
-
-- **DOCX to LaTeX**: Upload a Word (.docx) resume and convert it to LaTeX automatically (no LaTeX experience required)
-- **ATS Keyword Optimization**: Automatically incorporates relevant keywords from job descriptions
-- **Line-Count Preservation**: Optimizes bullets while maintaining exact line counts (no layout changes)
-- **No Hallucination**: Only rephrases existing content—never invents new experiences
-- **Visual Diff Comparison**: Side-by-side PDF comparison with highlighted changes
-- **Word-Level Diff**: See exactly what changed with detailed text and LaTeX diffs
-- **LaTeX Editor**: Edit your resume LaTeX directly in the browser with syntax highlighting; PDF preview on save and on load
-- **PDF Export**: Download optimized resumes as PDFs
-- **Job Queue Management**: Track multiple optimization jobs with status updates
-- **Desktop Notifications**: Get notified when optimizations complete
-- **Dark Mode**: Beautiful dark theme support
-
-## Architecture
-
-### Full-Stack Application
-
-- **Frontend**: Next.js 16 with React 19, TypeScript, Tailwind CSS, and shadcn/ui
-- **Backend**: FastAPI with Python 3.10+, DSPy, and PyMuPDF
-- **Deployment**: 
-  - Frontend: Vercel 
-  - Backend: Render
-
-### Optimization Pipeline
-
-TailorTom uses a **line-count preserving optimizer** that validates changes by compiling and checking actual line counts:
+| Component | Role |
+|-----------|------|
+| **API** (FastAPI) | HTTP API; runs DB migrations on startup, then serves traffic. Enqueues jobs to Redis; job data lives in Postgres. |
+| **Worker** (Celery) | Consumes optimization jobs from Redis; reads/writes jobs in Postgres. Starts only after API is healthy (migration gate). |
+| **Redis** | Celery broker and result backend (queue only; not source of truth). |
+| **Postgres** | Users, jobs, and job_global_stats. Schema managed by Alembic. |
+| **Caddy** (optional) | Reverse proxy and TLS (e.g. for `api.tailortom.org`). |
 
 ```
-[Resume LaTeX + Job Description]
-              │
-              ▼
-    ┌─────────────────────┐
-    │   pdflatex compile  │  ◄── Get baseline PDF
-    └──────────┬──────────┘
-               │
-               ▼
-    ┌─────────────────────┐
-    │  Extract Bullet     │  ◄── Line count for each bullet
-    │  Constraints        │      (e.g., "2 lines", "1 line")
-    └──────────┬──────────┘
-               │
-               ▼
-    ┌─────────────────────┐
-    │  Optimize Bullets   │  ◄── GPT-5-mini + ChainOfThought
-    │  (DSPy Module)      │      "MUST stay N lines"
-    └──────────┬──────────┘
-               │
-               ▼
-    ┌─────────────────────┐
-    │  Apply All          │  ◄── Replace LaTeX snippets
-    │  Replacements       │
-    └──────────┬──────────┘
-               │
-               ▼
-    ┌─────────────────────┐
-    │  Compile & Check    │  ◄── pdflatex → extract new line counts
-    │  Line Counts        │
-    └──────────┬──────────┘
-               │
-          ┌────┴────┐
-          │ Same?   │
-          └────┬────┘
-         Yes   │   No
-          │    │    │
-          ▼    │    ▼
-      [Accept] │  [Revert + Feedback]
-               │    "went from 2 to 3 lines"
-               └────┘  (retry with feedback)
+[Client] → Caddy → API → Redis ← Worker
+                ↓           ↓
+            Postgres ←──────┘
 ```
 
-**Key Features:**
-- **Line-count validation**: Checks actual rendered line counts, not word/char estimates
-- **Compile-and-verify**: Applies changes, compiles PDF, then validates
-- **Selective revert**: Only reverts bullets that changed line count
-- **Clear feedback**: "TOO LONG: went from 2 to 3 lines. Use shorter words."
-- **Section filtering**: Education and Skills sections are never modified
-- **Structured output**: Uses DSPy ChainOfThought with Pydantic-typed signatures
+- **Frontend** (Next.js) can be deployed separately (e.g. Vercel) and points `NEXT_PUBLIC_API_URL` at the API.
+
+---
 
 ## Prerequisites
 
-### Local Development
-
-- **Python 3.10+**
-- **Node.js 18+** and npm
-- **pdflatex** (LaTeX distribution)
+- **Docker & Docker Compose** (for VPS deployment)
+- **Postgres 13+** (or use the Postgres 16 image in Compose)
 - **OpenAI API key**
+- For local dev: **Python 3.10+**, **Node.js 18+**, **LaTeX** (e.g. MacTeX/BasicTeX)
 
-### Installing LaTeX (macOS)
+---
 
-```bash
-# Full MacTeX (5GB, everything included)
-brew install --cask mactex
+## Environment Setup
 
-# OR BasicTeX (100MB, minimal)
-brew install --cask basictex
-```
+### VPS / Docker Compose (production-like)
 
-## Installation
-
-### Backend Setup
-
-1. Navigate to the backend directory:
-```bash
-cd backend
-```
-
-2. Create a virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-4. Set up environment variables:
-```bash
-# Create .env file in backend/ directory
-OPENAI_API_KEY=your_api_key_here
-MODEL_NAME=openai/gpt-5-mini
-OPTIMIZER_MAX_WORKERS=2
-COMPILE_TIMEOUT=30
-```
-
-5. Run the backend server:
-```bash
-uvicorn api.main:app --reload
-```
-
-The API will be available at `http://localhost:8000`
-
-### Frontend Setup
-
-1. Navigate to the frontend directory:
-```bash
-cd frontend
-```
-
-2. Install dependencies:
-```bash
-npm install
-```
-
-3. Set up environment variables:
-```bash
-# Create .env.local file
-NEXT_PUBLIC_API_URL=http://localhost:8000
-```
-
-4. Run the development server:
-```bash
-npm run dev
-```
-
-The frontend will be available at `http://localhost:3000`
-
-## Configuration
-
-### Backend Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENAI_API_KEY` | (required) | Your OpenAI API key |
-| `MODEL_NAME` | `openai/gpt-5-mini` | DSPy model identifier |
-| `REDIS_URL` | (required) | Redis URL for Celery broker and job storage (e.g., `redis://localhost:6379/0`) |
-| `COMPILE_TIMEOUT` | `30` | pdflatex timeout in seconds |
-| `REDIS_TTL_DAYS` | `7` | Number of days to keep completed jobs in Redis |
-| `CELERY_TASK_TIME_LIMIT` | `600` | Maximum time in seconds for a Celery task (10 minutes) |
-| `CELERY_WORKER_CONCURRENCY` | `3` | Number of concurrent Celery worker processes |
-| `MAX_TOKENS` | `None` | Max tokens for LLM (None = model default) |
-| `TEMPERATURE` | `None` | LLM temperature (None = model default) |
-
-### Frontend Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `NEXT_PUBLIC_API_URL` | Backend API URL (default: `http://localhost:8000`) |
-
-### Optimization Settings (Frontend UI)
-
-These settings are configured in the Settings page and sent with each job request:
-
-- **Target Pages**: 1-3 pages (default: 1)
-- **Max Iterations**: 2-5 iterations (default: 3)
-- **Max Bullet Lines**: 1-3 lines per bullet (default: 2)
-
-## Deployment
-
-### Frontend Deployment (Vercel)
-
-1. Push your code to GitHub
-2. Import your repository in [Vercel](https://vercel.com)
-3. Set the root directory to `frontend`
-4. Add environment variable:
-   - `NEXT_PUBLIC_API_URL`: Your Render backend URL
-5. Deploy!
-
-### Backend Deployment (Render)
-
-#### Architecture Overview
-
-TailorTom uses a **Celery + Redis** architecture for job processing:
-
-```
-FastAPI API (Render) → Redis Queue → Celery Workers (Render)
-```
-
-- **API Service**: Handles HTTP requests, validates LaTeX, enqueues jobs
-- **Redis**: Job queue and persistent job storage
-- **Worker Service**: Processes optimization jobs independently
-
-#### Step 1: Set Up Redis
-
-**Option A: Upstash (Recommended for start - Free tier available)**
-1. Create account at [Upstash](https://upstash.com)
-2. Create a new Redis database
-3. Copy the Redis URL (format: `redis://default:password@host:port`)
-
-**Option B: Render Redis (Production)**
-1. In Render dashboard, create a new **Redis** service
-2. Copy the **Internal Redis URL** from the service dashboard
-3. Cost: $15/month (256MB) or $25/month (1GB)
-
-#### Step 2: Deploy API Service
-
-1. Push your code to GitHub
-2. Create a new **Web Service** in [Render](https://render.com)
-3. Connect your GitHub repository
-4. Configure the service:
-   - **Name**: `tailortom-api` (or your preferred name)
-   - **Environment**: `Docker`
-   - **Dockerfile Path**: `backend/Dockerfile`
-   - **Docker Context**: Root of repository
-   - **Start Command**: (leave empty, Dockerfile handles this)
-5. Add environment variables:
+1. At the **repo root** (same directory as `docker-compose.yml`), create `.env` from the VPS template:
+   ```bash
+   cp env.vps.example .env
    ```
-   OPENAI_API_KEY=your_api_key_here
-   MODEL_NAME=openai/gpt-5-mini
-   REDIS_URL=redis://your_redis_url_here
-   COMPILE_TIMEOUT=30
-   CELERY_WORKER_CONCURRENCY=3
-   REDIS_TTL_DAYS=7
+2. Edit `.env` and set **required** values:
+   - `OPENAI_API_KEY` — OpenAI API key
+   - `REDIS_URL` — use `redis://redis:6379/0` (Compose service name)
+   - `DATABASE_URL` — e.g. `postgresql://tailortom:YOUR_PASSWORD@postgres:5432/tailortom`
+   - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` — must match `DATABASE_URL`
+   - `JWT_SECRET` — long random string (e.g. `openssl rand -hex 32`)
+   - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `FRONTEND_URL` — for Sign in with Google
+3. Set `CELERY_QUEUE_NAME=hosted` (same for API and worker).
+
+See **env.vps.example** for optional vars (Discord webhook, worker concurrency, JWT expiry, etc.).
+
+### Local development (backend only)
+
+1. In **backend/** create `.env` from the backend example:
+   ```bash
+   cd backend && cp .env.example .env
    ```
-6. Deploy!
+2. Set `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`, and `JWT_SECRET` (see **backend/.env.example**).
+3. Use `CELERY_QUEUE_NAME=local` and run Postgres + Redis (e.g. `docker compose up -d postgres redis` from repo root with the same `.env`).
 
-#### Step 3: Deploy Worker Service
+---
 
-1. Create a **second Web Service** in Render (same repository)
-2. Configure the service:
-   - **Name**: `tailortom-worker` (or your preferred name)
-   - **Environment**: `Docker`
-   - **Dockerfile Path**: `backend/Dockerfile.worker`
-   - **Docker Context**: Root of repository
-   - **Start Command**: leave default (image CMD consumes both `hosted` and `docx` queues)
-3. Add **the same environment variables** as the API service:
+## First Deploy (VPS)
+
+1. **Prepare env**  
+   Copy `env.vps.example` to `.env` at repo root and fill required variables (see Environment Setup).
+
+2. **Start the stack**  
+   From repo root:
+   ```bash
+   docker compose up -d --build
    ```
-   OPENAI_API_KEY=your_api_key_here
-   MODEL_NAME=openai/gpt-5-mini
-   REDIS_URL=redis://your_redis_url_here
-   COMPILE_TIMEOUT=30
-   CELERY_WORKER_CONCURRENCY=3
-   CELERY_QUEUE_NAME=hosted
-   REDIS_TTL_DAYS=7
+   - **API** and **worker** both use **backend/Dockerfile** (same image). The API runs migrations then uvicorn; the worker overrides the command to run Celery. If migrations fail, the API container exits and the worker will not start.
+   - **Worker** depends on API **health**; it only starts consuming after the API healthcheck passes (migration has already completed).
+
+3. **Confirm migration**  
+   Optional: shell into the API container and check:
+   ```bash
+   docker compose exec api alembic current
    ```
-4. **Plan**: Starter ($7/month) - can handle 3-5 concurrent jobs
-5. Deploy!
+   Should show the current revision (e.g. `f0a1b2c3d4e5 (head)`).
 
-### Render Free Tier Considerations
+4. **Verification checklist** (see below).
 
-**Recommended Setup for Free Tier:**
-- **API Service**: Render Starter ($7/month) - handles requests
-- **Worker Service**: Render Starter ($7/month) - processes jobs
-- **Redis**: Upstash Free tier ($0/month) - 10K commands/day, 256MB
-- **Total Cost**: $14/month
+---
 
-**Worker Concurrency:**
-- **Starter Plan**: Set `CELERY_WORKER_CONCURRENCY=3` (512MB RAM, 0.5 CPU)
-- **Standard Plan**: Can increase to `CELERY_WORKER_CONCURRENCY=5` (4GB RAM, 1 CPU)
+## Migration Strategy and Commands
 
-**Why Separate Services?**
-- API stays responsive (doesn't block on job processing)
-- Workers can scale independently based on queue depth
-- Jobs persist in Redis (survive service restarts)
-- Production-ready architecture pattern
+- **On every API startup**, the API container runs `alembic upgrade head` before starting uvicorn. No separate migration step is required for normal deploys.
+- **DB-only migration run** (e.g. CI or a migration-only job): set only `DATABASE_URL` and run:
+  ```bash
+  alembic upgrade head
+  ```
+  Alembic does not require `OPENAI_API_KEY` or `REDIS_URL` for this.
+- **Current revision:**
+  ```bash
+  alembic current
+  ```
+- **History:**
+  ```bash
+  alembic history
+  ```
 
-**Scaling:**
-- **Low traffic** (< 100 users/day): 1 worker service with 3 concurrency
-- **Medium traffic** (100-500 users/day): 1 worker service with 3-5 concurrency
-- **High traffic** (500+ users/day): Multiple worker services or upgrade to Standard plan
+---
 
-## Project Structure
+## Verification Checklist
+
+After first deploy or after changes:
+
+| Check | How |
+|-------|-----|
+| API healthy | `curl -s http://localhost:8000/health` → `{"status":"healthy"}` |
+| DB at head | `docker compose exec api alembic current` → shows head revision |
+| Queue / worker | Submit a test job from the frontend; worker logs show task consumption |
+| Auth | Sign in with Google (if configured); JWT in response |
+
+---
+
+## Failure Recovery Playbook
+
+| Symptom | What to do |
+|--------|------------|
+| API container exits on startup | Check API logs: `docker compose logs api`. Often migration failure (e.g. DB not reachable or migration error). Fix DB or fix migration, then restart. |
+| Worker never starts | Worker waits for API **health**. Ensure API is up and `/health` returns 200. Check `docker compose ps` and API logs. |
+| Migration fails (e.g. "relation already exists") | If DB was partially migrated, check `alembic current` and `alembic history`. Prefer fixing forward (new migration) over downgrading; see Rollback below. |
+| 500 with `request_id` in response | Do not expose internal details to clients. Correlate with server logs: `grep request_id <log>` to find the traceback. |
+| "Internal server error" only | Response is intentionally generic. Use `request_id` from the response body or `X-Request-ID` header to find the log line and traceback. |
+
+---
+
+## Ongoing Schema Changes (Adding Fields Safely)
+
+1. **Edit the SQLAlchemy model** in `backend/api/db_models.py` (and any related code).
+2. **Generate a migration:**
+   ```bash
+   cd backend
+   alembic revision --autogenerate -m "add_user_preference_xyz"
+   ```
+3. **Review** the new file under `backend/alembic/versions/`. Remove or adjust any destructive or optional steps; avoid `DELETE`/`TRUNCATE` of user or job data without an explicit ops process.
+4. **Apply:**  
+   For local DB: `alembic upgrade head`.  
+   For VPS: re-deploy the stack; the API startup migration gate will run the new migration.
+5. **Deploy** the application code that uses the new schema.
+
+**Policy:** Migrations must not perform destructive deletes of user/job data without a documented runbook. Additive columns and indexes are preferred.
+
+---
+
+## Rollback Guidance
+
+- **When to downgrade:** Only when a migration was just applied and no app code has been deployed that relies on the new schema, and you need to revert the schema change. Use sparingly.
+- **When to forward-fix:** If the app is already running with the new schema or data exists in the new columns, add a **new** migration to fix the schema (e.g. add a missing column, fix a constraint) rather than downgrading.
+- **Downgrade one revision:**
+  ```bash
+  alembic downgrade -1
+  ```
+  Then fix the migration file or the model and re-apply.
+
+---
+
+## Local Development (Summary)
+
+- **Backend:** `cd backend`, `cp .env.example .env`, set `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`, `JWT_SECRET`. Run Postgres + Redis (e.g. via root `docker compose up -d postgres redis`). Apply migrations: `alembic upgrade head`. Start API: `uvicorn api.main:app --reload`. Start worker: `celery -A worker.app worker -Q local -l info`.
+- **Frontend:** `cd frontend`, `npm install`, set `NEXT_PUBLIC_API_URL=http://localhost:8000` in `.env.local`, `npm run dev`.
+- **LaTeX (macOS):** `brew install --cask mactex` or `basictex`.
+
+---
+
+## Features
+
+- DOCX → LaTeX conversion, ATS keyword optimization, line-count preservation, no hallucination
+- Visual and word-level diff, LaTeX editor with live PDF preview, job queue, desktop notifications, dark mode
+
+---
+
+## Project Structure (High Level)
 
 ```
 TailorTom/
 ├── backend/
-│   ├── api/                    # FastAPI application
-│   │   ├── main.py            # FastAPI app and middleware
-│   │   ├── models.py          # Pydantic request/response models
-│   │   ├── storage.py         # Redis-based job storage
-│   │   ├── celery_app.py      # Celery application configuration
-│   │   ├── tasks.py           # Celery task definitions
-│   │   ├── worker.py          # Celery worker entry point
-│   │   └── routes/            # API route handlers
-│   │       ├── optimize.py   # Job creation and enqueueing
-│   │       ├── jobs.py       # Job status and management
-│   │       ├── diff.py       # Diff computation endpoints
-│   │       ├── compile.py    # LaTeX compilation endpoints
-│   │       ├── convert.py    # DOCX to LaTeX conversion
-│   │       ├── settings.py  # Resume storage
-│   │       └── admin.py      # Admin dashboard
-│   ├── tailor_tom/            # Core business logic
-│   │   ├── config.py         # Configuration management
-│   │   ├── optimizer.py      # DSPy modules and pipeline
-│   │   ├── latex_compiler.py # LaTeX compilation
-│   │   ├── layout_analyzer.py # PDF layout analysis
-│   │   ├── docx_converter.py # DOCX extraction and JSON classification
-│   │   ├── resume_renderer.py # Deterministic LaTeX renderer (Option D)
-│   │   └── diff_utils.py     # Diff computation and PDF highlighting
-│   ├── Dockerfile            # Docker configuration for Render
-│   └── requirements.txt      # Python dependencies
-├── frontend/                 # Next.js application
-│   ├── app/                  # Next.js app router pages
-│   ├── components/           # React components
-│       │   ├── jobs/        # Job-related components
-│       │   ├── diff/        # Diff visualization components
-│       │   ├── editor/      # LaTeX editor component
-│       │   ├── layout/      # Layout components (navbar, theme)
-│       │   ├── settings/    # Settings form component
-│       │   └── ui/          # shadcn/ui components
-│       └── lib/             # Utility functions and API client
-├── notebooks/               # Jupyter notebooks (experimentation)
-└── README.md
+│   ├── api/           # FastAPI app, routes, DB models
+│   ├── worker/        # Celery app and tasks
+│   ├── tailor_tom/    # Config, optimizer, LaTeX, DOCX, diff
+│   ├── alembic/        # Migrations
+│   ├── scripts/       # start-api.sh (migration gate + uvicorn)
+│   └── Dockerfile
+├── frontend/           # Next.js app
+├── docker-compose.yml # API, worker, Postgres, Redis, Caddy
+├── env.vps.example    # VPS .env template (repo root)
+└── backend/.env.example  # Local dev .env template
 ```
 
-## How It Works
+---
 
-1. **Set up resume (Settings)**: Paste LaTeX or upload a Word (.docx) resume. We convert DOCX to LaTeX and show a live PDF preview. Save your template and preferences.
-2. **User submits a job**: Provides job description; resume and optimization settings come from Settings
-3. **API validates**: FastAPI validates LaTeX syntax and job description length
-4. **Job enqueued**: Job is stored in Redis and enqueued to Celery task queue
-5. **Worker processes**: Celery worker picks up job and runs the line-count preserving optimizer:
-   - **Compile original**: PDF is compiled to extract bullet line counts
-   - **Extract constraints**: Each bullet gets a `BulletConstraint` with its line count (e.g., "2 lines")
-   - **Filter sections**: Education and Skills bullets are excluded (never modified)
-   - **LLM optimization**: DSPy ChainOfThought generates replacements with keywords integrated
-   - **Apply all replacements**: All LLM outputs are applied to the LaTeX
-   - **Compile and verify**: PDF is compiled and line counts are checked for each bullet
-   - **Selective revert**: Bullets that changed line count are reverted with feedback ("went from 2 to 3 lines")
-   - **ICL retry loop**: Failed bullets get specific feedback and retry up to max_iterations
-   - **Final compile**: Optimized LaTeX compiled with all accepted changes
-6. **Status updates**: Worker updates job status in Redis throughout processing
-7. **Diff Generation**: Word-level diff is computed and PDFs are annotated with highlights (on-demand)
-8. **Results**: User can view diffs, edit LaTeX, and download optimized PDF
+## API Endpoints (Summary)
 
-## API Endpoints
+- **Jobs:** `POST /api/optimize`, `GET /api/jobs`, `GET /api/jobs/{id}`, `POST /api/jobs/{id}/cancel`, `DELETE /api/jobs/{id}`
+- **Compile:** `POST /api/compile/validate`, `POST /api/compile`
+- **Convert:** `POST /api/convert/docx`
+- **Diff:** `POST /api/diff`, `POST /api/diff-pdfs`
+- **Health:** `GET /health`
 
-### Optimization
-- `POST /api/optimize` - Create a new optimization job
-- `GET /api/jobs/{job_id}` - Get job status
-- `GET /api/jobs/{job_id}/latex` - Get optimized LaTeX
-- `POST /api/jobs/{job_id}/cancel` - Cancel a pending job
-- `DELETE /api/jobs/{job_id}` - Delete a completed job
+---
 
-### Compilation
-- `POST /api/compile/validate` - Validate LaTeX syntax
-- `POST /api/compile` - Compile LaTeX to PDF
+## Cleanup and maintenance
 
-### Conversion
-- `POST /api/convert/docx` - Convert a .docx resume to LaTeX (multipart: file, target_pages default 1)
+- **Dead-code checks:** Run `ruff check backend/` (or `pyflakes`) from repo root, excluding `backend/tailor_tom/optimizer/v1` if needed. Frontend: `npm run lint` in `frontend/` (ESLint; generated `.next` and `**/.next/**` are ignored).
+- **Deprecated APIs:** No endpoints or response fields are deprecated in this pass. Any future deprecations will be listed in `docs/CLEANUP-INVENTORY.md` and remain available until an explicit removal ticket.
+- **V1 no-touch policy:** Do not modify `backend/tailor_tom/optimizer/v1/`; it is frozen for compatibility.
 
-### Diff
-- `POST /api/diff` - Compute text diff between two LaTeX strings
-- `POST /api/diff-pdfs` - Generate annotated PDFs with highlights
+---
 
-## Contributing
+## Contributing and License
 
-Contributions are welcome! This is an open-source project built to help job seekers. Please feel free to submit issues and pull requests.
-
-## License
-
-MIT License - see LICENSE file for details.
+Contributions are welcome. MIT License — see LICENSE.

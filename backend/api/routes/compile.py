@@ -45,10 +45,10 @@ async def validate_latex_compile(request: ValidateRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"Error in validate_latex_compile: {e}")
+        logger.exception("Error in validate_latex_compile: %s", e)
         raise HTTPException(
             status_code=500,
-            detail=f"Internal error during validation: {str(e)}",
+            detail="Internal error during validation",
         )
 
 
@@ -85,10 +85,10 @@ async def compile_latex_to_pdf(request: CompileRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"Error in compile_latex_to_pdf: {e}")
+        logger.exception("Error in compile_latex_to_pdf: %s", e)
         raise HTTPException(
             status_code=500,
-            detail=f"Internal error during compilation: {str(e)}",
+            detail="Internal error during compilation",
         )
 
 

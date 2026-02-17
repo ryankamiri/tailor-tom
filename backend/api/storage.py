@@ -1,348 +1,231 @@
-"""Redis-based job storage for the API."""
+"""Compatibility storage module.
+
+Redis remains the transport/cache layer, while optimization job persistence is DB-first.
+This module keeps legacy helper signatures used by worker/optimizer/auth.
+"""
+
+from __future__ import annotations
 
 import json
 import logging
-import time
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, Tuple
-from threading import Lock
+from datetime import datetime, timezone
+from typing import Any, Optional
+from uuid import UUID
+
 import redis
-from tailor_tom.config import settings
-from api.job_fields import (
-    JOB_REQUIRED_FIELDS,
-    JOB_OPTIONAL_STRING_FIELDS,
-    JOB_RESTART_COUNT_FIELD,
-    JOB_LAST_RESTART_TIME_FIELD,
-    JOBS_STATS_PROCESSED_KEY,
-    JOBS_STATS_COMPLETED_KEY,
-    JOBS_STATS_FAILED_KEY,
+
+from api.cache import (
+    get_redis_client as _cache_redis_client,
+    on_job_write_invalidate,
+    set_job_cache,
 )
+from api.database import SessionLocal
+from api.db_models import Job
+from api.job_repository import (
+    create_job as repo_create_job,
+    get_global_stats,
+    get_job_by_id,
+    get_job_status_by_id as repo_get_job_status_by_id,
+    list_processing_jobs_for_recovery,
+    list_stuck_pending_jobs_for_recovery,
+    serialize_job_for_detail,
+    update_job_status as repo_update_job_status,
+)
+from tailor_tom.config import settings
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.ERROR)  # Only log errors
+logger.setLevel(logging.ERROR)
 
-# Redis client instance
-_redis_client: Optional[redis.Redis] = None
 
-# In-memory cache for job status to reduce Redis reads
-# Cache TTL: 30 seconds (job status doesn't change frequently)
-_JOB_CACHE_TTL = 30  # seconds
-_job_cache: Dict[str, Tuple[Dict[str, Any], float]] = {}  # {job_id: (job_data, timestamp)}
-_cache_lock = Lock()
-
+# ---------------------------------------------------------------------------
+# Redis client (used for refresh token and any cache helpers)
+# ---------------------------------------------------------------------------
 
 def get_redis_client() -> redis.Redis:
-    """Get or create Redis client instance."""
-    global _redis_client
-    if _redis_client is None:
-        try:
-            _redis_client = redis.from_url(
-                settings.redis_url,
-                decode_responses=True,
-                socket_connect_timeout=5,
-                socket_timeout=5,
-                retry_on_timeout=True,
-            )
-            # Test connection
-            _redis_client.ping()
-        except Exception as e:
-            logger.error(f"Failed to connect to Redis: {e}")
-            raise
-    return _redis_client
+    return _cache_redis_client()
 
 
-def _get_job_key(job_id: str) -> str:
-    """Get Redis key for a job."""
-    return f"job:{job_id}"
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-
-def create_job(job_id: str, job_data: Dict[str, Any]) -> None:
-    """Create a new job in Redis.
-    
-    Args:
-        job_id: Unique job identifier
-        job_data: Job data dictionary with fields:
-            - status: "pending" | "processing" | "completed" | "failed"
-            - created_at: ISO timestamp string
-            - completed_at: ISO timestamp string | None
-            - error_message: string | None
-            - original_latex: string
-            - result: dict | None (with optimized_latex and filename)
-            - company_name: string
-            - target_pages: int
-            - max_iterations: int
-            - restart_count: string (default: "0") - number of times job was re-enqueued
-            - last_restart_time: string (default: "") - ISO timestamp of last re-enqueue
-    """
-    client = get_redis_client()
-    key = _get_job_key(job_id)
-    
-    # Convert result dict to JSON string for storage
-    # Also convert None values to empty strings (Redis doesn't accept None)
-    job_data_copy = {}
-    for field, value in job_data.items():
-        if value is None:
-            job_data_copy[field] = ""  # Convert None to empty string
-        elif field == "result" and isinstance(value, dict):
-            job_data_copy[field] = json.dumps(value)
-        else:
-            job_data_copy[field] = str(value)
-    
-    # Initialize restart tracking fields if not present
-    if JOB_RESTART_COUNT_FIELD not in job_data_copy:
-        job_data_copy[JOB_RESTART_COUNT_FIELD] = "0"
-    if JOB_LAST_RESTART_TIME_FIELD not in job_data_copy:
-        job_data_copy[JOB_LAST_RESTART_TIME_FIELD] = ""
-    
-    # Set TTL (7 days default)
-    ttl_seconds = settings.redis_ttl_days * 24 * 60 * 60
-    
-    # Store as hash
-    client.hset(key, mapping=job_data_copy)
-    client.expire(key, ttl_seconds)
-    
-    # Verify critical fields were stored (for debugging)
-    stored_data = client.hgetall(key)
-    missing_stored = [f for f in JOB_REQUIRED_FIELDS if f not in stored_data or stored_data.get(f) == ""]
-    if missing_stored:
-        logger.error(
-            f"[create_job] CRITICAL: Job {job_id} created but required fields missing from Redis: {missing_stored}. "
-            f"Fields in job_data: {list(job_data.keys())}. "
-            f"Fields in job_data_copy: {list(job_data_copy.keys())}. "
-            f"Fields actually stored: {list(stored_data.keys())}"
-        )
-
-
-def get_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Get a job from Redis with in-memory caching to reduce Redis reads.
-    
-    Caches job data for 30 seconds to reduce redundant Redis operations.
-    Cache is automatically invalidated when job status is updated.
-    
-    Args:
-        job_id: Unique job identifier
-        
-    Returns:
-        Job data dictionary or None if not found
-    """
-    # Check cache first
-    current_time = time.time()
-    with _cache_lock:
-        if job_id in _job_cache:
-            cached_data, cache_time = _job_cache[job_id]
-            if current_time - cache_time < _JOB_CACHE_TTL:
-                # Cache hit - return cached data
-                return cached_data.copy()  # Return copy to prevent mutation
-            else:
-                # Cache expired - remove it
-                del _job_cache[job_id]
-    
-    # Cache miss or expired - fetch from Redis
-    client = get_redis_client()
-    key = _get_job_key(job_id)
-    
-    job_data = client.hgetall(key)
-    if not job_data:
+def _parse_iso_dt(raw: str | None) -> datetime | None:
+    if not raw:
         return None
-    
-    # Convert empty strings back to None (we stored None as "" in create_job)
-    # Handle all optional fields that could be None
-    # Note: job_description, first_name, last_name are required and should not be None
-    for field in JOB_OPTIONAL_STRING_FIELDS:
-        if job_data.get(field) == "":
-            job_data[field] = None
-    
-    # Initialize restart tracking fields if missing
-    if JOB_RESTART_COUNT_FIELD not in job_data or job_data.get(JOB_RESTART_COUNT_FIELD) == "":
-        job_data[JOB_RESTART_COUNT_FIELD] = "0"
-    if JOB_LAST_RESTART_TIME_FIELD not in job_data:
-        job_data[JOB_LAST_RESTART_TIME_FIELD] = ""
-    
-    # Convert result JSON string back to dict (if it exists and is not None)
-    if job_data.get("result"):
-        try:
-            job_data["result"] = json.loads(job_data["result"])
-        except json.JSONDecodeError:
-            logger.error(f"Failed to parse result JSON for job {job_id}")
-            job_data["result"] = None
-    
-    # Convert numeric fields (handle empty strings safely)
-    if job_data.get("target_pages"):
-        try:
-            job_data["target_pages"] = int(job_data["target_pages"])
-        except (ValueError, TypeError):
-            logger.error(f"Invalid target_pages value for job {job_id}: {job_data.get('target_pages')}")
-            job_data["target_pages"] = 1  # Default fallback
-    
-    if job_data.get("max_iterations"):
-        try:
-            max_iter = int(job_data["max_iterations"])
-            job_data["max_iterations"] = max_iter if max_iter > 0 else None
-        except (ValueError, TypeError):
-            logger.error(f"Invalid max_iterations value for job {job_id}: {job_data.get('max_iterations')}")
-            job_data["max_iterations"] = None
-    
-    if job_data.get("max_bullet_lines"):
-        try:
-            job_data["max_bullet_lines"] = int(job_data["max_bullet_lines"])
-        except (ValueError, TypeError):
-            job_data["max_bullet_lines"] = 2  # Default fallback
-    
-    # Store in cache
-    with _cache_lock:
-        _job_cache[job_id] = (job_data.copy(), current_time)
-        # Clean up old cache entries (keep cache size reasonable)
-        if len(_job_cache) > 1000:
-            # Remove oldest 20% of entries
-            sorted_entries = sorted(_job_cache.items(), key=lambda x: x[1][1])
-            for old_job_id, _ in sorted_entries[:200]:
-                del _job_cache[old_job_id]
-    
-    return job_data
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
 
-def update_job_status(
-    job_id: str,
-    status: str,
-    **updates: Any
-) -> None:
-    """Update job status and other fields in Redis.
-    
-    Also invalidates the in-memory cache for this job to ensure fresh data.
-    
-    Args:
-        job_id: Unique job identifier
-        status: New status ("pending" | "processing" | "completed" | "failed")
-        **updates: Additional fields to update (e.g., completed_at, error_message, result)
-    """
-    client = get_redis_client()
-    key = _get_job_key(job_id)
-    
-    # Check if job exists
-    if not client.exists(key):
-        logger.error(f"Attempted to update non-existent job {job_id}")
-        return
-    
-    # Get previous status for stats (before updating)
-    previous_status = client.hget(key, "status") or ""
-    
-    # Update status
-    client.hset(key, "status", status)
-    
-    # Increment global job stats when transitioning to a terminal state
-    if status == "completed" and previous_status != "completed":
-        client.incr(JOBS_STATS_PROCESSED_KEY)
-        client.incr(JOBS_STATS_COMPLETED_KEY)
-    elif status == "failed" and previous_status != "failed":
-        client.incr(JOBS_STATS_PROCESSED_KEY)
-        client.incr(JOBS_STATS_FAILED_KEY)
-    
-    # Update additional fields
-    for field, value in updates.items():
-        if value is None:
-            client.hset(key, field, "")
-        elif field == "result" and isinstance(value, dict):
-            # Convert result dict to JSON string
-            client.hset(key, field, json.dumps(value))
-        else:
-            client.hset(key, field, str(value))
-    
-    # Ensure restart tracking fields exist (initialize if not present)
-    existing_fields = client.hgetall(key)
-    if JOB_RESTART_COUNT_FIELD not in existing_fields:
-        client.hset(key, JOB_RESTART_COUNT_FIELD, "0")
-    if JOB_LAST_RESTART_TIME_FIELD not in existing_fields:
-        client.hset(key, JOB_LAST_RESTART_TIME_FIELD, "")
-    
-    # Invalidate cache for this job
-    with _cache_lock:
-        if job_id in _job_cache:
-            del _job_cache[job_id]
+def _job_to_legacy_dict(job: Job) -> dict[str, Any]:
+    detail = serialize_job_for_detail(job)
+    detail.update(
+        {
+            "job_description": job.job_description,
+            "max_bullet_lines": job.max_bullet_lines,
+            "first_name": job.first_name,
+            "last_name": job.last_name,
+            "original_latex": job.original_latex,
+            "target_pages": job.target_pages,
+            "max_iterations": job.max_iterations,
+            "restart_count": str(job.restart_count),
+            "last_restart_time": (
+                job.last_restart_time.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                if job.last_restart_time
+                else ""
+            ),
+            "user_id": str(job.user_id),
+        }
+    )
+    return detail
+
+
+def _apply_result_updates(job: Job, updates: dict[str, Any]) -> dict[str, Any]:
+    result = updates.get("result")
+    transformed: dict[str, Any] = {}
+    if isinstance(result, dict):
+        optimized_latex = result.get("optimized_latex") or ""
+        transformed["optimized_latex"] = optimized_latex
+        transformed["result_filename"] = result.get("filename") or "resume.pdf"
+        transformed["original_latex_length"] = len(job.original_latex or "")
+        transformed["optimized_latex_length"] = len(optimized_latex)
+    return transformed
+
+
+# ---------------------------------------------------------------------------
+# Legacy-compatible job helpers (DB-backed)
+# ---------------------------------------------------------------------------
+
+def create_job(job_id: str, job_data: dict[str, Any]) -> None:
+    db = SessionLocal()
+    try:
+        user_id = job_data.get("user_id")
+        if not user_id:
+            raise ValueError("user_id is required")
+        repo_create_job(
+            db,
+            job_id=job_id,
+            user_id=UUID(user_id),
+            original_latex=job_data["original_latex"],
+            company_name=job_data.get("company_name"),
+            target_pages=int(job_data.get("target_pages") or 1),
+            max_iterations=int(job_data.get("max_iterations") or 3),
+            job_description=job_data["job_description"],
+            max_bullet_lines=int(job_data.get("max_bullet_lines") or 2),
+            first_name=job_data["first_name"],
+            last_name=job_data["last_name"],
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def get_job_status_only(job_id: str) -> Optional[str]:
+    """Lightweight status-only check (e.g. for cancellation). Does not load full job payload."""
+    db = SessionLocal()
+    try:
+        return repo_get_job_status_by_id(db, job_id)
+    finally:
+        db.close()
+
+
+def get_job(job_id: str) -> Optional[dict[str, Any]]:
+    cached = _cache_redis_client().get(f"cache:job:{job_id}")
+    if cached:
+        try:
+            return json.loads(cached)
+        except Exception:
+            pass
+
+    db = SessionLocal()
+    try:
+        job = get_job_by_id(db, job_id)
+        if not job:
+            return None
+        payload = _job_to_legacy_dict(job)
+        set_job_cache(job_id, payload)
+        return payload
+    finally:
+        db.close()
+
+
+def update_job_status(job_id: str, status: str, **updates: Any) -> None:
+    db = SessionLocal()
+    try:
+        job = get_job_by_id(db, job_id)
+        if not job:
+            logger.error(f"Attempted to update non-existent job {job_id}")
+            return
+
+        transformed = _apply_result_updates(job, updates)
+        completed_at = _parse_iso_dt(updates.get("completed_at"))
+        last_restart_time = _parse_iso_dt(updates.get("last_restart_time"))
+        restart_count_raw = updates.get("restart_count")
+        restart_count = int(restart_count_raw) if restart_count_raw is not None else None
+
+        repo_update_job_status(
+            db,
+            job=job,
+            status=status,
+            completed_at=completed_at,
+            error_message=updates.get("error_message"),
+            company_name=updates.get("company_name"),
+            optimized_latex=transformed.get("optimized_latex"),
+            result_filename=transformed.get("result_filename"),
+            original_latex_length=transformed.get("original_latex_length"),
+            optimized_latex_length=transformed.get("optimized_latex_length"),
+            restart_count=restart_count,
+            last_restart_time=last_restart_time,
+            analysis_json=updates.get("analysis_json"),
+            llm_usage_source=updates.get("llm_usage_source"),
+            llm_prompt_tokens=updates.get("llm_prompt_tokens"),
+            llm_completion_tokens=updates.get("llm_completion_tokens"),
+            llm_estimated_cost_usd=updates.get("llm_estimated_cost_usd"),
+        )
+        db.commit()
+
+        on_job_write_invalidate(str(job.user_id), job_id)
+    finally:
+        db.close()
 
 
 def delete_job(job_id: str) -> bool:
-    """Delete a job from Redis.
-    
-    Also removes the job from the in-memory cache.
-    
-    Args:
-        job_id: Unique job identifier
-        
-    Returns:
-        True if job was deleted, False if it didn't exist
-    """
-    client = get_redis_client()
-    key = _get_job_key(job_id)
-    
-    deleted = client.delete(key)
-    
-    # Remove from cache
-    with _cache_lock:
-        if job_id in _job_cache:
-            del _job_cache[job_id]
-    
-    return deleted > 0
+    db = SessionLocal()
+    try:
+        job = get_job_by_id(db, job_id)
+        if not job:
+            return False
+        user_id = str(job.user_id)
+        db.delete(job)
+        db.commit()
+        on_job_write_invalidate(user_id, job_id)
+        return True
+    finally:
+        db.close()
 
 
-def get_orphaned_processing_jobs() -> list[Dict[str, Any]]:
-    """Get all jobs with status 'processing' (orphaned after worker restart).
-    
-    Returns:
-        List of job dictionaries with all fields needed to re-enqueue
-    """
-    client = get_redis_client()
-    
-    # Scan for all job keys
-    orphaned_jobs = []
-    cursor = 0
-    pattern = "job:*"
-    
-    while True:
-        cursor, keys = client.scan(cursor, match=pattern, count=100)
-        for key in keys:
-            # Extract job_id from key (format: "job:{job_id}")
-            job_id = key[4:]  # Remove "job:" prefix
-            
-            # First check status directly from Redis (bypass cache)
-            # This ensures we get the actual current status
-            raw_status = client.hget(key, "status")
-            if raw_status != "processing":
-                continue
-            
-            # Now use get_job() to get full job data with proper parsing
-            # Clear cache first to ensure fresh data
-            with _cache_lock:
-                if job_id in _job_cache:
-                    del _job_cache[job_id]
-            
-            job_data = get_job(job_id)
-            if not job_data:
-                continue
-            
-            # Double-check status (should be "processing" but verify)
-            if job_data.get("status") == "processing":
-                # Ensure job_id is in the dict (get_job doesn't add it)
-                job_data["job_id"] = job_id
-                orphaned_jobs.append(job_data)
-        
-        if cursor == 0:
-            break
-    
-    return orphaned_jobs
+def get_orphaned_processing_jobs() -> list[dict[str, Any]]:
+    db = SessionLocal()
+    try:
+        return [_job_to_legacy_dict(job) for job in list_processing_jobs_for_recovery(db)]
+    finally:
+        db.close()
 
 
-def get_job_stats() -> Dict[str, int]:
-    """Get global job statistics from Redis counters.
-    
-    Returns:
-        Dict with keys: processed, completed, failed (all integers, default 0 if key missing)
-    """
-    client = get_redis_client()
-    processed = int(client.get(JOBS_STATS_PROCESSED_KEY) or 0)
-    completed = int(client.get(JOBS_STATS_COMPLETED_KEY) or 0)
-    failed = int(client.get(JOBS_STATS_FAILED_KEY) or 0)
-    return {
-        "processed": processed,
-        "completed": completed,
-        "failed": failed,
-    }
+def get_stuck_pending_jobs(min_age_seconds: int = 120) -> list[dict[str, Any]]:
+    """Jobs stuck in pending (task likely never enqueued or lost)."""
+    db = SessionLocal()
+    try:
+        jobs = list_stuck_pending_jobs_for_recovery(db, min_age_seconds=min_age_seconds)
+        return [_job_to_legacy_dict(job) for job in jobs]
+    finally:
+        db.close()
+
+
+def get_job_stats() -> dict[str, int]:
+    db = SessionLocal()
+    try:
+        return get_global_stats(db)
+    finally:
+        db.close()

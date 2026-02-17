@@ -11,7 +11,7 @@ import uuid
 from fastapi import APIRouter, Form, HTTPException, UploadFile, File
 
 from api.conversion_storage import CONVERSION_KEY_PREFIX, CONVERSION_TTL, get_redis_client
-from api.tasks import convert_docx_task
+from worker.tasks import convert_docx_task
 from tailor_tom.docx_converter import extract_content_from_docx
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ async def start_docx_conversion(
         structured_content = extract_content_from_docx(docx_bytes)
     except Exception as e:
         logger.exception("Failed to extract content from .docx: %s", e)
-        raise HTTPException(status_code=400, detail=f"Failed to parse .docx file: {e}")
+        raise HTTPException(status_code=400, detail="Failed to parse .docx file")
 
     if not structured_content.get("elements"):
         raise HTTPException(status_code=400, detail="No content found in .docx file")
@@ -82,7 +82,7 @@ async def start_docx_conversion(
         )
     except Exception as e:
         logger.exception("Failed to enqueue DOCX conversion: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to start conversion: {e}")
+        raise HTTPException(status_code=500, detail="Failed to start conversion")
 
     return {"conversion_id": conversion_id}
 

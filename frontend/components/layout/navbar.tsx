@@ -1,17 +1,20 @@
 'use client';
 
 import Link from 'next/link';
+import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { Moon, Sun } from 'lucide-react';
+import { Moon, Sun, LogOut } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { useEffect, useState, useTransition } from 'react';
+import { useAuth } from '@/contexts/auth-context';
 
 export function Navbar() {
   const pathname = usePathname();
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   const [, startTransition] = useTransition();
+  const { user, isAuthenticated, loading, logout } = useAuth();
 
   // Standard next-themes pattern: set mounted after client-side hydration
   useEffect(() => {
@@ -20,12 +23,20 @@ export function Navbar() {
     });
   }, [startTransition]);
 
-  const navLinks = [
+  // Authenticated navigation links
+  const authNavLinks = [
     { href: '/', label: 'Home' },
     { href: '/settings', label: 'Settings' },
     { href: '/jobs', label: 'Jobs' },
     { href: '/jobs/new', label: 'New Job' },
   ];
+
+  // Unauthenticated: only Home and Login
+  const publicNavLinks = [
+    { href: '/', label: 'Home' },
+  ];
+
+  const navLinks = isAuthenticated ? authNavLinks : publicNavLinks;
 
   return (
     <nav className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -53,8 +64,9 @@ export function Navbar() {
             ))}
           </div>
 
-          {/* Theme Toggle */}
-          <div className="flex items-center space-x-4">
+          {/* Right side: Theme toggle + Auth */}
+          <div className="flex items-center space-x-3">
+            {/* Theme Toggle */}
             <Button
               variant="ghost"
               size="icon"
@@ -71,6 +83,46 @@ export function Navbar() {
                 <Moon className="h-5 w-5" />
               )}
             </Button>
+
+            {/* Auth section */}
+            {!loading && (
+              isAuthenticated && user ? (
+                <div className="flex items-center space-x-3">
+                  {/* Avatar */}
+                  {user.avatar_url ? (
+                    <Image
+                      src={user.avatar_url}
+                      alt={user.name || user.email}
+                      width={32}
+                      height={32}
+                      className="rounded-full"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm font-medium">
+                      {(user.first_name?.[0] || user.email[0]).toUpperCase()}
+                    </div>
+                  )}
+
+                  {/* Logout */}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={logout}
+                    aria-label="Sign out"
+                    title="Sign out"
+                  >
+                    <LogOut className="h-4 w-4" />
+                  </Button>
+                </div>
+              ) : (
+                <Link href="/login">
+                  <Button variant="default" size="sm">
+                    Sign in
+                  </Button>
+                </Link>
+              )
+            )}
           </div>
         </div>
 
@@ -96,4 +148,3 @@ export function Navbar() {
     </nav>
   );
 }
-

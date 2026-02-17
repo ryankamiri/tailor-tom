@@ -23,3 +23,12 @@ kombu>=5.3.0
 
 # DOCX conversion
 python-docx>=1.0
+
+# Database (PostgreSQL + ORM + migrations)
+sqlalchemy>=2.0
+alembic>=1.13
+psycopg2-binary>=2.9
+
+# Auth (Google OAuth + JWT)
+pyjwt[crypto]>=2.8
+httpx>=0.27

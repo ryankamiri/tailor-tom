@@ -1,0 +1,26 @@
+# Local dev only: Redis + Postgres. Run once: docker compose -f docker-compose.dev.yml up -d
+# Then: npm run dev (from repo root)
+# Backend .env: REDIS_URL=redis://127.0.0.1:6379/0, DATABASE_URL=postgresql://tailortom:tailortom@127.0.0.1:5432/tailortom
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data_dev:/data
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tailortom
+      POSTGRES_PASSWORD: tailortom
+      POSTGRES_DB: tailortom
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+
+volumes:
+  redis_data_dev:
+  postgres_data_dev:

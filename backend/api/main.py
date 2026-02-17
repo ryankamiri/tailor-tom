@@ -2,12 +2,14 @@
 
 import logging
 import traceback
+import uuid
 from contextlib import asynccontextmanager
+from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from api.routes import optimize, jobs, diff, compile, settings, admin, convert
+from api.routes import optimize, jobs, diff, compile, admin, convert, auth
 from tailor_tom.config import settings as app_settings
 
 # Configure logging
@@ -37,38 +39,60 @@ app = FastAPI(
 )
 
 
+def _get_request_id(request: Request) -> str:
+    """Per-request ID: X-Request-ID if present and valid, else new UUID."""
+    provided = request.headers.get("X-Request-ID", "").strip()
+    if provided and len(provided) <= 128:
+        return provided
+    return str(uuid.uuid4())
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Set request_id on request.state and log it for correlation."""
+
+    async def dispatch(self, request: Request, call_next):
+        request_id = _get_request_id(request)
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    """Log HTTP exceptions before returning them."""
-    # Don't log 404s for DELETE /api/jobs/{job_id} - it's idempotent and expected
-    if (exc.status_code == 404 and 
-        request.method == "DELETE" and 
-        request.url.path.startswith("/api/jobs/")):
-        # Expected behavior - job doesn't exist, deletion is idempotent
-        pass
-    else:
-        logger.error(
-            f"HTTPException: {exc.status_code} - {exc.detail} - "
-            f"Path: {request.url.path} - Method: {request.method}"
-        )
+    """Log HTTP exceptions; for 5xx return generic detail to avoid leaking internal errors."""
+    request_id = getattr(request.state, "request_id", None) or _get_request_id(request)
+    logger.error(
+        "HTTPException: %s - %s - Path: %s - Method: %s - request_id=%s",
+        exc.status_code, exc.detail, request.url.path, request.method, request_id,
+    )
+    detail = exc.detail
+    if exc.status_code >= 500:
+        detail = "Internal server error"
     return JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail},
+        content={"detail": detail, "request_id": request_id},
     )
 
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    """Log all unhandled exceptions."""
+    """Log unhandled exceptions; return generic message and request_id only (no leak)."""
+    request_id = getattr(request.state, "request_id", None) or _get_request_id(request)
     logger.error(
-        f"Unhandled exception: {type(exc).__name__}: {str(exc)} - "
-        f"Path: {request.url.path} - Method: {request.method}"
+        "Unhandled exception: %s - Path: %s - Method: %s - request_id=%s",
+        type(exc).__name__, request.url.path, request.method, request_id,
     )
-    logger.error(f"Traceback:\n{traceback.format_exc()}")
+    logger.error("Traceback (request_id=%s):\n%s", request_id, traceback.format_exc())
     return JSONResponse(
         status_code=500,
-        content={"detail": f"Internal server error: {str(exc)}"},
+        content={"detail": "Internal server error", "request_id": request_id},
+        headers={"X-Request-ID": request_id},
     )
+
+
+# Request ID first so it's available to exception handlers
+app.add_middleware(RequestIDMiddleware)
 
 # CORS middleware
 # Allow requests from frontend domains
@@ -92,9 +116,9 @@ app.include_router(optimize.router, prefix="/api", tags=["optimize"])
 app.include_router(jobs.router, prefix="/api", tags=["jobs"])
 app.include_router(diff.router, prefix="/api", tags=["diff"])
 app.include_router(compile.router, prefix="/api", tags=["compile"])
-app.include_router(settings.router, prefix="/api", tags=["settings"])
 app.include_router(admin.router, prefix="/api", tags=["admin"])
 app.include_router(convert.router, prefix="/api", tags=["convert"])
+app.include_router(auth.router, prefix="/auth", tags=["auth"])
 
 
 @app.get("/")

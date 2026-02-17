@@ -77,37 +77,47 @@ class Settings(BaseSettings):
         description="Timeout in seconds for LaTeX compilation (xelatex/lualatex/pdflatex)",
     )
 
+    # Database
+    database_url: str = Field(
+        default=None,
+        description="PostgreSQL URL (e.g., postgresql://user:pass@localhost:5432/dbname). Used when DB is enabled.",
+    )
+
     # Redis Configuration
     redis_url: str = Field(
         ...,
         description="Redis URL for Celery broker and result backend (e.g., redis://localhost:6379/0)",
     )
 
-    redis_ttl_days: int = Field(
-        default=7,
-        ge=1,
-        le=30,
-        description="Number of days to keep completed jobs in Redis before expiration",
-    )
-
     # Celery Configuration
     celery_task_time_limit: int = Field(
-        default=1800,
+        default=900,
         ge=60,
         le=3600,
-        description="Maximum time in seconds for a Celery task to complete (30 minutes default)",
+        description="Maximum time in seconds for a Celery task to complete (15 minutes default)",
     )
 
     celery_worker_concurrency: int = Field(
-        default=3,
+        default=4,
         ge=1,
         le=10,
         description="Number of concurrent Celery worker processes",
     )
 
+    worker_max_tasks_per_child: int = Field(
+        default=25,
+        ge=1,
+        le=500,
+        description="Max tasks per worker child before restart (memory hardening).",
+    )
+
     celery_queue_name: str = Field(
         default="default",
         description="Celery queue name for task routing. Use 'local' for local development, 'hosted' for production.",
+    )
+    discord_webhook_url: Optional[str] = Field(
+        default=None,
+        description="Discord webhook URL for Celery task failure notifications. If unset, no Discord notifications are sent.",
     )
 
     # Target Pages (Deprecated: Now configured via frontend settings UI)
@@ -118,10 +128,108 @@ class Settings(BaseSettings):
         description="[Deprecated] Target number of pages - now configured via frontend settings",
     )
 
-    # Admin Configuration
-    admin_password: str = Field(
+    # Google OAuth
+    google_client_id: str = Field(
         default="",
-        description="Password for admin panel access (set via ADMIN_PASSWORD env var)",
+        description="Google OAuth client ID (from Google Cloud Console)",
+    )
+    google_client_secret: str = Field(
+        default="",
+        description="Google OAuth client secret",
+    )
+    frontend_url: str = Field(
+        default="http://localhost:3000",
+        description="Frontend URL for OAuth redirect (e.g., https://www.tailortom.org)",
+    )
+
+    # Optimizer (economy mode; token budget = max_tokens above)
+    economy_top_k: int = Field(
+        default=8,
+        ge=1,
+        le=50,
+        description="Economy mode: top-K bullets to consider for rewrite.",
+    )
+    candidates_per_bullet: int = Field(
+        default=2,
+        ge=1,
+        le=6,
+        description="Number of candidates the LLM generates per bullet per pass (cap).",
+    )
+    min_score_delta_to_accept: Optional[float] = Field(
+        default=0.0,
+        ge=-1.0,
+        le=1.0,
+        description="Minimum ATS score delta to accept (0 = accept any non-regression).",
+    )
+    optimizer_max_char_growth: int = Field(
+        default=10,
+        ge=0,
+        le=100,
+        description="Max allowed character growth per rewritten bullet before line-count verification (V2 prefilter guard).",
+    )
+    optimizer_max_word_growth: int = Field(
+        default=0,
+        ge=0,
+        le=20,
+        description="Max allowed word growth per rewritten bullet (V3 pass-1 guard).",
+    )
+    optimizer_max_shrink_words: int = Field(
+        default=3,
+        ge=0,
+        le=20,
+        description="Max words allowed to be removed per bullet (V3 pass-1 shrink limit).",
+    )
+    optimizer_max_shrink_percent: float = Field(
+        default=0.15,
+        ge=0.0,
+        le=1.0,
+        description="Max character shrink fraction per bullet (V3 pass-1 shrink limit).",
+    )
+
+    # Optimizer V2 debug observability (all DEBUG lines prefixed with 'DEBUG ')
+    optimizer_debug_enabled: bool = Field(
+        default=False,
+        description="Enable optimizer debug logging. When false, no DEBUG lines are emitted.",
+    )
+    optimizer_debug_raw_text: bool = Field(
+        default=False,
+        description="When true (and debug enabled), log raw LLM output text (truncated by optimizer_debug_max_text_chars).",
+    )
+    optimizer_debug_max_text_chars: int = Field(
+        default=12000,
+        ge=100,
+        le=100000,
+        description="Max characters for debug raw text truncation.",
+    )
+    optimizer_debug_emit_candidate_payload: bool = Field(
+        default=True,
+        description="Emit candidate payload in debug logs (set false in production to reduce volume).",
+    )
+    optimizer_debug_emit_pass_snapshots: bool = Field(
+        default=True,
+        description="Emit pass-level snapshots in debug logs.",
+    )
+    use_chooser_path: bool = Field(
+        default=True,
+        description="Use global one-pass bundle chooser. When False, use legacy pass-loop optimizer.",
+    )
+
+    # JWT
+    jwt_secret: str = Field(
+        default="dev-jwt-secret-change-in-production",
+        description="Secret key for signing JWT access tokens (use a long random string in production)",
+    )
+    jwt_access_expiration_minutes: int = Field(
+        default=60,
+        ge=5,
+        le=1440,
+        description="Access token lifetime in minutes (default: 60)",
+    )
+    jwt_refresh_expiration_days: int = Field(
+        default=30,
+        ge=1,
+        le=90,
+        description="Refresh token lifetime in days (default: 30)",
     )
 
 
@@ -137,4 +245,3 @@ def get_settings() -> Settings:
 
 # Global settings instance for convenience
 settings = get_settings()
-

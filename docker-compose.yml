@@ -21,6 +21,12 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks:
       - tailortom
 
@@ -33,14 +39,17 @@ services:
     command:
       - sh
       - -c
-      - "celery -A api.worker worker --loglevel=info --concurrency=$${CELERY_WORKER_CONCURRENCY:-4} --queues=$${CELERY_QUEUE_NAME:-hosted}"
+      - "celery -A worker.app worker --loglevel=info --concurrency=$${CELERY_WORKER_CONCURRENCY:-4} --queues=$${CELERY_QUEUE_NAME:-hosted}"
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
       CELERY_QUEUE_NAME: ${CELERY_QUEUE_NAME:-hosted}
       CELERY_WORKER_CONCURRENCY: ${CELERY_WORKER_CONCURRENCY:-4}
+      WORKER_MAX_TASKS_PER_CHILD: ${WORKER_MAX_TASKS_PER_CHILD:-25}
       DATABASE_URL: ${DATABASE_URL}
     depends_on:
+      api:
+        condition: service_healthy
       redis:
         condition: service_started
       postgres:

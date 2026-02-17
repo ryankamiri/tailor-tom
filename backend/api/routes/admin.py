@@ -1,228 +1,237 @@
-"""Admin endpoints for viewing and managing saved resumes."""
+"""Admin endpoints for viewing and managing saved resumes.
+
+All routes require a valid JWT from a user with ``is_admin = True``.
+Resumes are stored in the ``users`` table (``resume_latex`` column).
+"""
 
 import logging
 import re
-import secrets
-from fastapi import APIRouter, HTTPException, Depends, Query, Response
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from api.resume_storage import list_all_resumes, get_resume, delete_resume
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from api.cache import (
+    cache_get_or_set_dict,
+    get_admin_user_costs_cache,
+    set_admin_user_costs_cache,
+)
+from api.database import get_db
+from api.db_models import User
+from api.deps import CurrentUserIdentity, require_admin
+from api.job_repository import get_admin_user_costs, get_admin_user_summary, get_admin_users, get_admin_v3_health
 from api.storage import get_job_stats
-from tailor_tom.config import settings
-from tailor_tom.latex_compiler import compile_latex
+from api.validation import validate_admin_utc_month
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.ERROR)  # Only log errors for API endpoints
+logger.setLevel(logging.ERROR)
 router = APIRouter()
 
-security = HTTPBasic()
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _resume_filename(user: User) -> str:
+    """Generate a download-friendly filename for a user's resume."""
+    first = re.sub(r"[^\w]", "", user.first_name or "Unknown").title()
+    last = re.sub(r"[^\w]", "", user.last_name or "Unknown").title()
+    short_id = str(user.id).replace("-", "")[:8]
+    return f"{first}_{last}_{short_id}_resume"
 
 
-def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
-    """Verify admin password.
-    
-    Args:
-        credentials: HTTP Basic Auth credentials
-        
-    Returns:
-        Username (can be any string, password is what matters)
-        
-    Raises:
-        HTTPException: If password is incorrect
-    """
-    if not settings.admin_password:
-        raise HTTPException(
-            status_code=500,
-            detail="Admin password not configured. Set ADMIN_PASSWORD environment variable.",
-        )
-    
-    # Compare password using constant-time comparison
-    is_correct = secrets.compare_digest(credentials.password, settings.admin_password)
-    if not is_correct:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid admin password",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    
-    return credentials.username
-
+# ---------------------------------------------------------------------------
+# Stats
+# ---------------------------------------------------------------------------
 
 @router.get("/admin/stats")
-async def get_stats(username: str = Depends(verify_admin)):
-    """Get global job statistics (admin only).
-    
-    Returns:
-        processed: total jobs that reached a terminal state (completed or failed)
-        completed: jobs that completed successfully
-        failed: jobs that failed
-    """
+async def get_stats(identity: CurrentUserIdentity = Depends(require_admin)):
+    """Get global job statistics (admin only)."""
     try:
         return get_job_stats()
     except Exception as e:
-        logger.exception(f"Failed to get job stats: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get job stats: {str(e)}",
-        )
+        logger.exception("Failed to get job stats: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to get job stats")
 
+
+@router.get("/admin/users")
+async def list_admin_users(
+    identity: CurrentUserIdentity = Depends(require_admin),
+    db: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1, description="Page number"),
+    limit: int = Query(default=20, ge=1, le=100, description="Page size"),
+    search: str | None = Query(default=None, description="Search by name or email"),
+    year: int | None = Query(default=None, description="UTC year for cost month"),
+    month: int | None = Query(default=None, ge=1, le=12, description="UTC month 1-12"),
+    sort: str = Query(default="email", description="Sort field: email, last_name, last_job_at, month_cost_usd, total_cost_usd, completed_count"),
+    order: str = Query(default="asc", description="Sort order: asc, desc"),
+    has_resume: bool | None = Query(default=None, description="Filter by has resume"),
+    active_only: bool = Query(default=False, description="Only users with active_jobs_count > 0"),
+    failed_only: bool = Query(default=False, description="Only users with at least one failed job"),
+):
+    """Get aggregated user rows for admin workspace. Paginated and filterable."""
+    try:
+        yr, mo = validate_admin_utc_month(year, month)
+    except ValueError as e:
+        logger.warning("Admin users list validation: %s", e)
+        raise HTTPException(status_code=422, detail="Invalid year/month or filter parameters")
+    try:
+        return get_admin_users(
+            db,
+            page=page,
+            limit=limit,
+            search=search,
+            year=yr,
+            month=mo,
+            sort=sort,
+            order=order,
+            has_resume=has_resume,
+            active_only=active_only,
+            failed_only=failed_only,
+        )
+    except ValueError as e:
+        logger.warning("Admin users list: %s", e)
+        raise HTTPException(status_code=422, detail="Invalid filter or sort parameters")
+    except Exception as e:
+        logger.exception("Failed to list admin users: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to list users")
+
+
+@router.get("/admin/users/{user_id}/summary")
+async def get_user_summary(
+    user_id: str,
+    identity: CurrentUserIdentity = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Get one user's detailed summary for admin drawer. Includes recent jobs, quota, cost."""
+    try:
+        uid = UUID(user_id)
+    except ValueError as e:
+        logger.warning("Admin user summary invalid user_id: %s", e)
+        raise HTTPException(status_code=422, detail="Invalid user_id")
+    summary = get_admin_user_summary(db, uid)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return summary
+
+
+@router.get("/admin/v3-health")
+async def get_v3_health(
+    identity: CurrentUserIdentity = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Get V3 optimizer health summary from recent jobs with analysis_json (admin only)."""
+    try:
+        return get_admin_v3_health(db, job_limit=500)
+    except Exception as e:
+        logger.exception("Failed to get V3 health: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to get V3 health")
+
+
+@router.get("/admin/user-costs")
+async def get_user_costs(
+    identity: CurrentUserIdentity = Depends(require_admin),
+    db: Session = Depends(get_db),
+    year: int | None = Query(default=None, description="UTC calendar year"),
+    month: int | None = Query(default=None, ge=1, le=12, description="UTC calendar month 1-12"),
+    page: int = Query(default=1, ge=1, description="Page number"),
+    limit: int = Query(default=20, ge=1, le=100, description="Page size"),
+):
+    """Get per-user cost analytics: lifetime and selected UTC month. Admin only.
+    Omit year/month to use current UTC month. Results are paginated and cached."""
+    try:
+        yr, mo = validate_admin_utc_month(year, month)
+    except ValueError as e:
+        logger.warning("Admin user-costs validation: %s", e)
+        raise HTTPException(status_code=422, detail="Invalid year/month parameters")
+    try:
+        def produce() -> dict:
+            return get_admin_user_costs(db, year=yr, month=mo, page=page, limit=limit)
+
+        return cache_get_or_set_dict(
+            get_admin_user_costs_cache,
+            set_admin_user_costs_cache,
+            produce,
+            yr,
+            mo,
+            page,
+            limit,
+        )
+    except ValueError as e:
+        logger.warning("Admin user-costs: %s", e)
+        raise HTTPException(status_code=422, detail="Invalid filter parameters")
+    except Exception as e:
+        logger.exception("Failed to get admin user costs: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to get user cost analytics")
+
+
+# ---------------------------------------------------------------------------
+# Resume CRUD (backed by users table)
+# ---------------------------------------------------------------------------
 
 @router.get("/admin/resumes")
-async def list_resumes(username: str = Depends(verify_admin)):
-    """List all saved resumes (admin only).
-    
-    Returns:
-        List of resumes with metadata (resume_id, first_name, last_name, created_at, filename)
-    """
-    try:
-        resumes = list_all_resumes()
-        
-        # Return only metadata (exclude LaTeX content to reduce payload size)
-        resume_list = []
-        for resume in resumes:
-            resume_list.append({
-                "resume_id": resume.get("resume_id"),
-                "first_name": resume.get("first_name"),
-                "last_name": resume.get("last_name"),
-                "created_at": resume.get("created_at"),
-                "filename": resume.get("filename"),
-            })
-        
-        return {
-            "resumes": resume_list,
-            "count": len(resume_list),
-        }
-    except Exception as e:
-        logger.exception(f"Failed to list resumes: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to list resumes: {str(e)}",
-        )
-
-
-@router.get("/admin/resumes/{resume_id}")
-async def get_resume_detail(
-    resume_id: str,
-    username: str = Depends(verify_admin),
+async def list_resumes(
+    identity: CurrentUserIdentity = Depends(require_admin),
+    db: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1, description="Page number"),
+    limit: int = Query(default=20, ge=1, le=100, description="Page size"),
 ):
-    """Get full resume data including LaTeX (admin only).
-    
-    Args:
-        resume_id: Unique resume identifier
-        
-    Returns:
-        Full resume data including LaTeX content
-    """
-    resume = get_resume(resume_id)
-    if not resume:
-        raise HTTPException(status_code=404, detail="Resume not found")
-    
-    # Ensure filename is always present - generate if missing
-    if not resume.get("filename") or resume.get("filename") == "":
-        # Generate filename from resume data
-        first_name = resume.get("first_name", "Unknown")
-        last_name = resume.get("last_name", "Unknown")
-        user_id = resume.get("user_id", resume_id[:8])
-        safe_first = re.sub(r'[^\w]', '', first_name).title() if first_name else "Unknown"
-        safe_last = re.sub(r'[^\w]', '', last_name).title() if last_name else "Unknown"
-        user_id_short = user_id.replace('-', '')[:8] if user_id else resume_id[:8]
-        resume["filename"] = f"{safe_first}_{safe_last}_{user_id_short}_resume.pdf"
-    
-    return resume
-
-
-@router.get("/admin/resumes/{resume_id}/download")
-async def download_resume(
-    resume_id: str,
-    format: str = Query("pdf", regex="^(pdf|latex)$"),
-    username: str = Depends(verify_admin),
-):
-    """Download a resume as PDF or LaTeX (admin only).
-    
-    Args:
-        resume_id: Unique resume identifier
-        format: Download format - "pdf" or "latex" (default: "pdf")
-        
-    Returns:
-        File response with appropriate content type and filename
-    """
-    resume = get_resume(resume_id)
-    if not resume:
-        raise HTTPException(status_code=404, detail="Resume not found")
-    
-    filename_base = resume.get("filename", f"{resume_id}_resume")
-    # Remove .pdf extension if present, we'll add the appropriate one
-    if filename_base.endswith(".pdf"):
-        filename_base = filename_base[:-4]
-    
-    if format == "pdf":
-        # Compile LaTeX to PDF
-        latex = resume.get("latex", "")
-        if not latex:
-            raise HTTPException(
-                status_code=500,
-                detail="Resume LaTeX content is missing",
-            )
-        
-        compile_result = compile_latex(latex)
-        if not compile_result.success:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to compile LaTeX to PDF: {compile_result.error_message}",
-            )
-        
-        filename = f"{filename_base}.pdf"
-        return Response(
-            content=compile_result.pdf_bytes,
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-            },
-        )
-    else:  # format == "latex"
-        # Return LaTeX file
-        latex = resume.get("latex", "")
-        if not latex:
-            raise HTTPException(
-                status_code=500,
-                detail="Resume LaTeX content is missing",
-            )
-        
-        filename = f"{filename_base}.tex"
-        return Response(
-            content=latex,
-            media_type="text/plain",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-            },
-        )
-
-
-@router.delete("/admin/resumes/{resume_id}")
-async def delete_resume_endpoint(
-    resume_id: str,
-    username: str = Depends(verify_admin),
-):
-    """Delete a resume from Redis (admin only).
-    
-    Args:
-        resume_id: Unique resume identifier
-        
-    Returns:
-        Success message
-    """
-    resume = get_resume(resume_id)
-    if not resume:
-        raise HTTPException(status_code=404, detail="Resume not found")
-    
-    deleted = delete_resume(resume_id)
-    if not deleted:
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to delete resume",
-        )
-    
+    """List users that have a saved resume (admin only). Paginated."""
+    base = db.query(User).filter(User.resume_latex.isnot(None))
+    total_items = base.with_entities(func.count(User.id)).scalar() or 0
+    total_pages = max(1, (total_items + limit - 1) // limit)
+    offset = (page - 1) * limit
+    users = (
+        base.order_by(User.updated_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
     return {
-        "resume_id": resume_id,
-        "message": "Resume deleted successfully",
+        "resumes": [
+            {
+                "user_id": str(u.id),
+                "email": u.email,
+                "first_name": u.first_name,
+                "last_name": u.last_name,
+                "avatar_url": u.avatar_url,
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+                "filename": _resume_filename(u) + ".pdf",
+            }
+            for u in users
+        ],
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total_items": total_items,
+            "total_pages": total_pages,
+            "has_next": page < total_pages,
+            "has_prev": page > 1,
+        },
     }
+
+
+@router.get("/admin/resumes/{user_id}")
+async def get_resume_detail(
+    user_id: str,
+    identity: CurrentUserIdentity = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Get full resume data including LaTeX for a specific user (admin only)."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or not user.resume_latex:
+        raise HTTPException(status_code=404, detail="Resume not found")
+
+    return {
+        "user_id": str(user.id),
+        "email": user.email,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "avatar_url": user.avatar_url,
+        "latex": user.resume_latex,
+        "filename": _resume_filename(user) + ".pdf",
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+    }
+
 

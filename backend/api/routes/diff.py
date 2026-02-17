@@ -77,10 +77,10 @@ async def get_annotated_diff_pdfs(request: DiffRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"Error in get_annotated_diff_pdfs: {e}")
+        logger.exception("Error in get_annotated_diff_pdfs: %s", e)
         raise HTTPException(
             status_code=500,
-            detail=f"Internal error generating diff PDFs: {str(e)}",
+            detail="Internal error generating diff PDFs",
         )
 
 

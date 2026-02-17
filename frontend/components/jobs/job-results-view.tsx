@@ -6,11 +6,9 @@ import { Button } from '@/components/ui/button';
 import { LatexEditor } from '@/components/editor/latex-editor';
 import { PdfDiffView } from '@/components/diff/pdf-diff-view';
 import { DiffResponse, validateLatex, compileLatexToPdf, computeLatexDiff } from '@/lib/api';
-import { storeOptimizedLatex } from '@/lib/storage';
 import { toast } from 'sonner';
 
 export interface JobResultsViewProps {
-  jobId: string;
   originalLatex: string;
   optimizedLatex: string;
   filename?: string | null;
@@ -18,7 +16,6 @@ export interface JobResultsViewProps {
 }
 
 export function JobResultsView({
-  jobId,
   originalLatex,
   optimizedLatex,
   filename,
@@ -46,7 +43,7 @@ export function JobResultsView({
     loadSummary();
   }, [originalLatex, optimizedLatex]);
 
-  // Handle save: validate LaTeX, save to localStorage and regenerate diffs
+  // Validate LaTeX and regenerate diff summary + PDF view (no server persistence)
   const handleSave = useCallback(async () => {
     try {
       setIsSaving(true);
@@ -61,11 +58,7 @@ export function JobResultsView({
         return; // Don't save if LaTeX is invalid
       }
 
-      // LaTeX is valid, proceed with saving
-      // Save to localStorage
-      storeOptimizedLatex(jobId, editedLatex, filename || undefined);
-      
-      // Regenerate summary
+      // LaTeX is valid; regenerate summary and PDF diff (no server persistence for edited LaTeX)
       try {
         const diffData = await computeLatexDiff(originalLatex, editedLatex);
         setDiffSummary(diffData.summary);
@@ -85,7 +78,7 @@ export function JobResultsView({
       toast.error(errorMessage);
       setIsSaving(false);
     }
-  }, [jobId, editedLatex, filename, originalLatex]);
+  }, [editedLatex, originalLatex]);
 
   // Keyboard shortcut: Command+S (Mac) or Ctrl+S (Windows/Linux)
   useEffect(() => {

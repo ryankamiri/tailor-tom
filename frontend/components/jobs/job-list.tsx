@@ -1,45 +1,42 @@
 'use client';
 
-import { useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { StoredJob, canCreateJobWithinDailyLimit } from '@/lib/storage';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
 import { Plus } from 'lucide-react';
 import { DailyLimitBadge } from './daily-limit-badge';
+import { useAuth } from '@/contexts/auth-context';
+import { JobListItem } from '@/lib/api';
 
-// Dynamically import JobCard with SSR disabled to avoid hydration issues
 const JobCard = dynamic(() => import('./job-card').then(mod => ({ default: mod.JobCard })), {
   ssr: false,
   loading: () => <div className="h-32 w-full animate-pulse bg-muted rounded-lg" />
 });
 
+export type JobStatusFilter = 'all' | 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
+
 export interface JobListProps {
-  jobs: StoredJob[];
+  jobs: JobListItem[];
+  statusFilter: JobStatusFilter;
+  onStatusFilterChange: (filter: JobStatusFilter) => void;
   onJobsChange?: () => void;
+  isLoadingMore?: boolean;
+  hasMore?: boolean;
+  onLoadMore?: () => void;
 }
 
-export function JobList({ jobs, onJobsChange }: JobListProps) {
-  const [filter, setFilter] = useState<string>('all');
-
-  const handleJobChanged = () => {
-    // Notify parent component to refresh jobs list
-    onJobsChange?.();
-  };
-
-  const filteredJobs = jobs.filter((job) => {
-    if (filter === 'all') return true;
-    return job.status === filter;
-  });
-
-  const pendingCount = jobs.filter((j) => j.status === 'pending').length;
-  const processingCount = jobs.filter((j) => j.status === 'processing').length;
-  const completedCount = jobs.filter((j) => j.status === 'completed').length;
-  const failedCount = jobs.filter((j) => j.status === 'failed').length;
-
-  const dailyLimit = canCreateJobWithinDailyLimit();
-  const canCreateNew = dailyLimit.canCreate;
+export function JobList({
+  jobs,
+  statusFilter,
+  onStatusFilterChange,
+  onJobsChange,
+  isLoadingMore = false,
+  hasMore = false,
+  onLoadMore,
+}: JobListProps) {
+  const { user } = useAuth();
+  const canCreateByDailyLimit = (user?.daily_limit_remaining ?? 0) > 0;
 
   return (
     <div className="space-y-4">
@@ -48,7 +45,7 @@ export function JobList({ jobs, onJobsChange }: JobListProps) {
           <h2 className="text-2xl font-bold">Your Jobs</h2>
           <DailyLimitBadge />
         </div>
-        <Button asChild disabled={!canCreateNew}>
+        <Button asChild disabled={!canCreateByDailyLimit}>
           <Link href="/jobs/new">
             <Plus className="mr-2 h-4 w-4" />
             New Job
@@ -56,50 +53,47 @@ export function JobList({ jobs, onJobsChange }: JobListProps) {
         </Button>
       </div>
 
-      <Tabs value={filter} onValueChange={setFilter}>
+      <Tabs value={statusFilter} onValueChange={(v) => onStatusFilterChange(v as JobStatusFilter)}>
         <TabsList>
-          <TabsTrigger value="all">
-            All ({jobs.length})
-          </TabsTrigger>
-          <TabsTrigger value="pending">
-            Pending ({pendingCount})
-          </TabsTrigger>
-          <TabsTrigger value="processing">
-            Processing ({processingCount})
-          </TabsTrigger>
-          <TabsTrigger value="completed">
-            Completed ({completedCount})
-          </TabsTrigger>
-          <TabsTrigger value="failed">
-            Failed ({failedCount})
-          </TabsTrigger>
+          <TabsTrigger value="all">All</TabsTrigger>
+          <TabsTrigger value="pending">Pending</TabsTrigger>
+          <TabsTrigger value="processing">Processing</TabsTrigger>
+          <TabsTrigger value="completed">Completed</TabsTrigger>
+          <TabsTrigger value="failed">Failed</TabsTrigger>
+          <TabsTrigger value="cancelled">Cancelled</TabsTrigger>
         </TabsList>
 
-        <TabsContent value={filter} className="space-y-4 mt-4">
-          {filteredJobs.length === 0 ? (
+        <TabsContent value={statusFilter} className="space-y-4 mt-4">
+          {jobs.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
               <p className="text-lg mb-2">No jobs found</p>
               <p className="text-sm mb-4">
-                {filter === 'all'
-                  ? 'Create your first optimization job to get started.'
-                  : `No ${filter} jobs.`}
+                {statusFilter === 'all' ? 'Create your first optimization job to get started.' : `No ${statusFilter} jobs.`}
               </p>
-              {filter === 'all' && (
+              {statusFilter === 'all' && (
                 <Button asChild>
                   <Link href="/jobs/new">Create New Job</Link>
                 </Button>
               )}
             </div>
           ) : (
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {filteredJobs.map((job) => (
-                <JobCard key={job.jobId} job={job} onJobChanged={handleJobChanged} />
-              ))}
-            </div>
+            <>
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                {jobs.map((job) => (
+                  <JobCard key={job.job_id} job={job} onJobChanged={onJobsChange} />
+                ))}
+              </div>
+              {hasMore && onLoadMore && (
+                <div className="flex justify-center pt-2">
+                  <Button variant="outline" onClick={onLoadMore} disabled={isLoadingMore}>
+                    {isLoadingMore ? 'Loading...' : 'Load More'}
+                  </Button>
+                </div>
+              )}
+            </>
           )}
         </TabsContent>
       </Tabs>
     </div>
   );
 }
-

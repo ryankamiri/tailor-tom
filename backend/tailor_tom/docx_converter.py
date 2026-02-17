@@ -13,7 +13,8 @@ Pipeline (Option D):
 import io
 import json
 import logging
-from typing import Optional
+import re
+from typing import Any, Optional
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -217,6 +218,115 @@ def _extract_table(table) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Marker sanitization (defense in depth: strip conversion artifacts from JSON)
+# ---------------------------------------------------------------------------
+
+# Patterns that must never appear in final output (bracket/alignment tokens from LLM input)
+_DOCX_MARKER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # Combined modifier tags (any order)
+    (re.compile(r"\[(?:BOLD|ITALIC|UNDERLINE)(?:,(?:BOLD|ITALIC|UNDERLINE))*\]", re.I), ""),
+    (re.compile(r"\[/\]"), ""),
+    (re.compile(r"\[TAB\]"), ""),
+    (re.compile(r"\[RIGHT-ALIGNED\]"), ""),
+    (re.compile(r"\[CENTER-ALIGNED\]"), ""),
+    (re.compile(r"\(align:\s*center\)", re.I), ""),
+    (re.compile(r"\(align:\s*right\)", re.I), ""),
+    (re.compile(r"\(align:\s*left\)", re.I), ""),
+    (re.compile(r"\[HEADING\s+level=\d+\]\s*", re.I), ""),
+    (re.compile(r"\[BULLET\]\s*", re.I), ""),
+    (re.compile(r"\[TABLE\s+\d+x\d+\]", re.I), ""),
+    (re.compile(r"\[/TABLE\]", re.I), ""),
+]
+
+# Single pattern to detect any of the above (for safety gate scan)
+_DOCX_MARKER_ANY = re.compile(
+    r"\[(?:BOLD|ITALIC|UNDERLINE)(?:,(?:BOLD|ITALIC|UNDERLINE))*\]|"
+    r"\[/\]|\[TAB\]|\[RIGHT-ALIGNED\]|\[CENTER-ALIGNED\]|"
+    r"\(align:\s*(?:center|right|left)\)|"
+    r"\[HEADING\s+level=\d+\]|\[BULLET\]|\[TABLE\s+\d+x\d+\]|\[/TABLE\]",
+    re.I,
+)
+
+# Observability
+_docx_marker_sanitized_count = 0
+_docx_marker_blocked_count = 0
+
+
+def _sanitize_string(value: str) -> str:
+    """Remove known DOCX conversion marker tokens from a string. Normalize whitespace."""
+    if not value or not isinstance(value, str):
+        return value
+    s = value
+    for pattern, repl in _DOCX_MARKER_PATTERNS:
+        s = pattern.sub(repl, s)
+    # Collapse multiple spaces and strip
+    s = re.sub(r"[ \t]+", " ", s).strip()
+    return s
+
+
+def _recursive_sanitize_resume_json(obj: Any) -> None:
+    """In-place sanitize all string values in resume JSON (header, sections, entries, etc.)."""
+    global _docx_marker_sanitized_count
+    if isinstance(obj, dict):
+        for k, v in list(obj.items()):
+            if isinstance(v, str):
+                cleaned = _sanitize_string(v)
+                if cleaned != v:
+                    _docx_marker_sanitized_count += 1
+                obj[k] = cleaned
+            else:
+                _recursive_sanitize_resume_json(v)
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            if isinstance(item, str):
+                cleaned = _sanitize_string(item)
+                if cleaned != item:
+                    _docx_marker_sanitized_count += 1
+                obj[i] = cleaned
+            else:
+                _recursive_sanitize_resume_json(item)
+
+
+def _scan_for_markers(obj: Any, path: str = "") -> list[tuple[str, str]]:
+    """Return list of (path, value) for any string that still contains marker patterns."""
+    found: list[tuple[str, str]] = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            p = f"{path}.{k}" if path else k
+            if isinstance(v, str):
+                if _DOCX_MARKER_ANY.search(v):
+                    found.append((p, v))
+            else:
+                found.extend(_scan_for_markers(v, p))
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            p = f"{path}[{i}]"
+            if isinstance(item, str):
+                if _DOCX_MARKER_ANY.search(item):
+                    found.append((p, item))
+            else:
+                found.extend(_scan_for_markers(item, p))
+    return found
+
+
+def _safety_gate_markers(resume_json: dict) -> None:
+    """Ensure no formatting markers remain; sanitize once, then fail if still present."""
+    global _docx_marker_blocked_count
+    first_scan = _scan_for_markers(resume_json)
+    if not first_scan:
+        return
+    _recursive_sanitize_resume_json(resume_json)
+    second_scan = _scan_for_markers(resume_json)
+    if second_scan:
+        _docx_marker_blocked_count += 1
+        sample = second_scan[0]
+        raise RuntimeError(
+            f"Resume JSON still contains formatting markers after sanitization (e.g. at {sample[0]}: {sample[1][:80]!r}). "
+            "Conversion rejected to avoid leaking markers into PDF."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Step 2: Classify content into structured JSON via LLM
 # ---------------------------------------------------------------------------
 
@@ -254,15 +364,19 @@ Include only the fields relevant to the chosen type (entries for entry_list, \
 items for skills, content for text).
 
 RULES:
-- Preserve ALL text EXACTLY. Do not rephrase or omit anything.
-- Bold text is usually primary (company/school name).
-- Italic text is usually secondary (role/degree).
-- [RIGHT-ALIGNED] text is usually dates or location.
-- [TAB] separates left and right content in the same line.
-- Tables at the top of the document are usually contact info.
+- Preserve visible resume text exactly. Do not rephrase or omit content.
+- Do NOT copy any helper metadata labels or tokens into output fields. Only \
+the text that appears after "TEXT:" (or in table cells before alignment hints) \
+is content; ALIGNMENT and STYLE_HINT lines are for your classification only.
+- Bold runs usually indicate primary (company/school name). Italic usually \
+secondary (role/degree). Right-aligned or after-tab content is often dates/location.
 - Bullet items go in the "bullets" array.
 - For contact items, infer URLs: emails -> mailto:, linkedin/github -> https://
-- Join split fragments (e.g. "Jan 20" + "25" -> "Jan 2025")."""
+- Join split fragments (e.g. "Jan 20" + "25" -> "Jan 2025").
+
+FORBIDDEN in output (never put these in any JSON string value):
+[BOLD], [ITALIC], [UNDERLINE], [TAB], [RIGHT-ALIGNED], [CENTER-ALIGNED], [/], \
+(align: center), (align: right), (align: left), [HEADING ...], [BULLET], [TABLE ...]."""
 
 
 def generate_latex_from_docx(
@@ -332,6 +446,14 @@ def generate_latex_from_docx(
         try:
             resume_json = _extract_json_from_response(raw_output)
             resume_json = _validate_resume_json(resume_json)
+            # Post-parse sanitization: strip any marker tokens that leaked into output
+            _n_sanitized_before = _docx_marker_sanitized_count
+            _recursive_sanitize_resume_json(resume_json)
+            if _docx_marker_sanitized_count > _n_sanitized_before:
+                logger.info(
+                    "DOCX marker sanitization applied (%d string(s) cleaned in this conversion)",
+                    _docx_marker_sanitized_count - _n_sanitized_before,
+                )
         except (ValueError, json.JSONDecodeError) as e:
             logger.warning("JSON parsing failed on attempt %d: %s", attempt, e)
             last_error = str(e)
@@ -339,6 +461,23 @@ def generate_latex_from_docx(
             messages.append({
                 "role": "user",
                 "content": "Invalid JSON. Output ONLY valid JSON matching the schema.",
+            })
+            continue
+
+        # --- Pre-render safety gate: fail fast if markers remain -------------
+        try:
+            _safety_gate_markers(resume_json)
+        except RuntimeError as e:
+            logger.error("DOCX safety gate: %s", e)
+            last_error = str(e)
+            messages.append({"role": "assistant", "content": raw_output})
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Your output contained formatting markers that must not appear in resume text. "
+                    "Output ONLY visible resume content in JSON string fields — no [BOLD], [TAB], "
+                    "(align: ...), or similar tokens."
+                ),
             })
             continue
 
@@ -359,64 +498,62 @@ def generate_latex_from_docx(
 
 
 def _format_content_for_llm(structured_content: dict) -> str:
-    """Format extracted .docx content into a readable description for the LLM."""
+    """Format extracted .docx content for the LLM with visible text only; metadata separate.
+
+    Emits TEXT: <visible content> and ALIGNMENT/STYLE_HINT on separate lines so the LLM
+    never sees bracket-style markers in the content it should copy into JSON.
+    """
     lines: list[str] = []
     lines.append("=== DOCUMENT CONTENT ===\n")
 
-    for i, elem in enumerate(structured_content.get("elements", [])):
+    for elem in structured_content.get("elements", []):
         if elem["type"] == "paragraph":
-            prefix = ""
-            if elem.get("is_heading"):
-                prefix = f"[HEADING level={elem['heading_level']}] "
-            elif elem.get("is_list"):
-                prefix = "[BULLET] "
-
-            alignment_tag = ""
-            if elem.get("alignment") != "left":
-                alignment_tag = f" (align: {elem['alignment']})"
-
-            # Determine tab alignment for this paragraph
-            tab_align = elem.get("tab_alignment")  # "right", "center", or None
-
-            # Show runs with formatting info, representing tabs
-            formatted_runs = []
+            # Build visible text only (no [BOLD], [TAB], etc.)
+            visible_parts: list[str] = []
+            tab_align = elem.get("tab_alignment")
             for run in elem.get("runs", []):
                 if run.get("tab"):
-                    # Represent tab as alignment marker
-                    if tab_align == "right":
-                        formatted_runs.append(" [RIGHT-ALIGNED] ")
-                    elif tab_align == "center":
-                        formatted_runs.append(" [CENTER-ALIGNED] ")
-                    else:
-                        formatted_runs.append(" [TAB] ")
+                    # Tab: emit a single space as separator; alignment is metadata below
+                    visible_parts.append(" ")
                     continue
+                visible_parts.append(run.get("text", ""))
+            text_only = "".join(visible_parts).strip()
 
-                text = run["text"]
-                modifiers = []
+            # Metadata on separate lines so LLM does not copy them as content
+            if elem.get("is_heading"):
+                lines.append(f"STYLE_HINT: heading level={elem.get('heading_level', 1)}")
+            elif elem.get("is_list"):
+                lines.append("STYLE_HINT: bullet")
+            if elem.get("alignment") != "left":
+                lines.append(f"ALIGNMENT: {elem['alignment']}")
+            if tab_align:
+                lines.append(f"TAB_ALIGNMENT: {tab_align} (content after tab is often dates/location)")
+            # Run formatting hint for classification only (bold=primary, italic=secondary)
+            run_hints = []
+            for run in elem.get("runs", []):
+                if run.get("tab"):
+                    continue
                 if run.get("bold"):
-                    modifiers.append("BOLD")
-                if run.get("italic"):
-                    modifiers.append("ITALIC")
-                if run.get("underline"):
-                    modifiers.append("UNDERLINE")
+                    run_hints.append("bold")
+                elif run.get("italic"):
+                    run_hints.append("italic")
+                elif run.get("underline"):
+                    run_hints.append("underline")
+            if run_hints:
+                lines.append(f"STYLE_HINT: runs have {', '.join(run_hints)} (for primary/secondary classification)")
 
-                if modifiers:
-                    formatted_runs.append(f"[{','.join(modifiers)}]{text}[/]")
-                else:
-                    formatted_runs.append(text)
-
-            run_text = "".join(formatted_runs)
-            lines.append(f"{prefix}{run_text}{alignment_tag}")
+            lines.append(f"TEXT: {text_only}")
 
         elif elem["type"] == "table":
-            lines.append(f"\n[TABLE {elem['num_rows']}x{elem['num_cols']}]")
+            lines.append(f"TABLE: {elem['num_rows']}x{elem['num_cols']}")
             for row in elem.get("rows", []):
-                cells = []
-                for cell in row:
-                    align_note = f" (align:{cell['alignment']})" if cell.get("alignment") != "left" else ""
-                    cells.append(f"{cell['text']}{align_note}")
-                lines.append(" | ".join(cells))
-            lines.append("[/TABLE]\n")
+                cell_texts = [cell.get("text", "") for cell in row]
+                lines.append(" | ".join(cell_texts))
+                # Alignment as metadata only (one line per row)
+                alignments = [cell.get("alignment", "left") for cell in row]
+                if any(a != "left" for a in alignments):
+                    lines.append(f"ALIGNMENT: {', '.join(alignments)}")
+            lines.append("")
 
     return "\n".join(lines)
 

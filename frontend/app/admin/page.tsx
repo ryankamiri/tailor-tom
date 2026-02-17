@@ -1,683 +1,487 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { listAdminResumes, downloadResume, deleteResume, getAdminJobStats } from '@/lib/api';
-import { getCachedAdminResumes, saveCachedAdminResumes, CachedResume, canCreateJobWithinDailyLimit, clearDailyJobCount } from '@/lib/storage';
-import { ADMIN_SESSION_TIMEOUT_MS } from '@/lib/constants';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  getAdminUsers,
+  getAdminUserSummary,
+  listAdminResumes,
+  getAdminResume,
+  getAdminJobStats,
+  getAdminUserCosts,
+  getAdminV3Health,
+  compileLatexToPdf,
+  resetMyDailyCount,
+  type AdminUserRow,
+  type AdminUsersResponse,
+  type AdminUserSummaryResponse,
+  type AdminUserCostsResponse,
+  type AdminPagination,
+  type AdminV3HealthResponse,
+} from '@/lib/api';
+import { resumePdfFilename } from '@/lib/utils';
+import { formatLocalDateSafe, formatUsdCompact } from '@/lib/formatting';
+import { PaginationControls } from '@/components/admin/pagination-controls';
+import { AdminTopBar } from '@/components/admin/admin-top-bar';
+import { AdminOverviewStrip } from '@/components/admin/admin-overview-strip';
+import { AdminUsersTable } from '@/components/admin/admin-users-table';
+import { AdminUserDetailDrawer } from '@/components/admin/admin-user-detail-drawer';
+import { AdminHealthPanel } from '@/components/admin/admin-health-panel';
+import { RequireAuth } from '@/components/layout/require-auth';
+import { useAuth } from '@/contexts/auth-context';
 import { toast } from 'sonner';
 
 interface Resume {
-  resume_id: string;
+  user_id: string;
+  email: string;
   first_name: string;
   last_name: string;
+  avatar_url: string | null;
   created_at: string;
   filename: string;
 }
 
-export default function AdminPage() {
+const DEFAULT_LIMIT = 20;
+
+function AdminContent() {
   const router = useRouter();
-  // Initialize password from sessionStorage synchronously to prevent flash
-  const [password, setPassword] = useState(() => {
-    if (typeof window !== 'undefined') {
-      const storedPassword = sessionStorage.getItem('admin_password');
-      if (storedPassword) {
-        // Check if session is still valid synchronously
-        const timestamp = sessionStorage.getItem('admin_session_timestamp');
-        if (timestamp) {
-          const sessionAge = Date.now() - parseInt(timestamp, 10);
-          if (sessionAge <= ADMIN_SESSION_TIMEOUT_MS) {
-            return storedPassword;
-          } else {
-            // Session expired, clear it
-            sessionStorage.removeItem('admin_password');
-            sessionStorage.removeItem('admin_session_timestamp');
-          }
-        }
-      }
-    }
-    return '';
-  });
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isLoading, setIsLoading] = useState(true); // Start with loading=true to prevent flash
+  const { user, setUserFromProfile } = useAuth();
+  const now = new Date();
+  const [search, setSearch] = useState('');
+  const [year, setYear] = useState(now.getUTCFullYear());
+  const [month, setMonth] = useState(now.getUTCMonth() + 1);
+  const [page, setPage] = useState(1);
+  const [sort, setSort] = useState('email');
+  const [order, setOrder] = useState<'asc' | 'desc'>('asc');
+  const [hasResume, setHasResume] = useState<boolean | null>(null);
+  const [activeOnly, setActiveOnly] = useState(false);
+  const [failedOnly, setFailedOnly] = useState(false);
+
+  const [usersData, setUsersData] = useState<AdminUsersResponse | null>(null);
+  const [usersLoading, setUsersLoading] = useState(true);
+  const [jobStats, setJobStats] = useState<{ processed: number; completed: number; failed: number; cancelled: number } | null>(null);
+  const [v3Health, setV3Health] = useState<AdminV3HealthResponse | null>(null);
+  const [costData, setCostData] = useState<AdminUserCostsResponse | null>(null);
+  const [costError, setCostError] = useState<string | null>(null);
   const [resumes, setResumes] = useState<Resume[]>([]);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [dailyLimit, setDailyLimit] = useState(canCreateJobWithinDailyLimit());
-  const [jobStats, setJobStats] = useState<{ processed: number; completed: number; failed: number } | null>(null);
+  const [resumePagination, setResumePagination] = useState<AdminPagination | null>(null);
+  const [resumePage, setResumePage] = useState(1);
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [costPage, setCostPage] = useState(1);
 
-  const updateAdminSessionTimestamp = useCallback(() => {
-    sessionStorage.setItem('admin_session_timestamp', Date.now().toString());
-  }, []);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [userSummary, setUserSummary] = useState<AdminUserSummaryResponse | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
 
-  const checkAdminSessionTimeout = useCallback((): boolean => {
-    const timestamp = sessionStorage.getItem('admin_session_timestamp');
-    if (!timestamp) {
-      return false; // No timestamp means not logged in
-    }
-    
-    const sessionAge = Date.now() - parseInt(timestamp, 10);
-    if (sessionAge > ADMIN_SESSION_TIMEOUT_MS) {
-      // Session expired
-      sessionStorage.removeItem('admin_password');
-      sessionStorage.removeItem('admin_session_timestamp');
-      setIsAuthenticated(false);
-      setPassword('');
-      toast.error('Admin session expired. Please log in again.');
-      return false;
-    }
-    
-    return true; // Session is valid
-  }, []);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isResettingDaily, setIsResettingDaily] = useState(false);
 
-  const handleAutoLogin = useCallback(async (storedPassword: string) => {
-    // Check if session has expired
-    if (!checkAdminSessionTimeout()) {
-      return; // Session expired, don't auto-login
-    }
-
-    setIsLoading(true);
+  const loadOverview = useCallback(async () => {
+    setOverviewLoading(true);
     try {
-      const [data, stats] = await Promise.all([
-        listAdminResumes(storedPassword),
-        getAdminJobStats(storedPassword),
+      const [stats, health] = await Promise.all([
+        getAdminJobStats(),
+        getAdminV3Health().catch(() => null),
       ]);
-      const redisResumes = data.resumes;
-      
-      // Get cached resumes from local storage
-      const cachedResumes = getCachedAdminResumes();
-      
-      // Merge: combine Redis + cached, remove duplicates by resume_id
-      const resumeMap = new Map<string, CachedResume>();
-      cachedResumes.forEach((resume: CachedResume) => {
-        resumeMap.set(resume.resume_id, resume);
-      });
-      redisResumes.forEach((resume: Resume) => {
-        const existingCached = resumeMap.get(resume.resume_id);
-        if (existingCached) {
-          resumeMap.set(resume.resume_id, {
-            ...resume,
-            ...(existingCached.latex && { latex: existingCached.latex }),
-            ...(existingCached.user_id && { user_id: existingCached.user_id }),
-          });
-        } else {
-          resumeMap.set(resume.resume_id, resume);
-        }
-      });
-      
-      const mergedResumes = Array.from(resumeMap.values()).sort((a, b) => {
-        const dateA = new Date(a.created_at).getTime();
-        const dateB = new Date(b.created_at).getTime();
-        return dateB - dateA;
-      });
-      
-      setResumes(mergedResumes as Resume[]);
-      saveCachedAdminResumes(mergedResumes);
       setJobStats(stats);
-      setIsAuthenticated(true);
-      updateAdminSessionTimestamp();
-    } catch {
-      // Password might be invalid, clear it
-      sessionStorage.removeItem('admin_password');
-      sessionStorage.removeItem('admin_session_timestamp');
-      setPassword('');
-      setIsAuthenticated(false);
+      setV3Health(health ?? null);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to load overview');
     } finally {
-      setIsLoading(false);
+      setOverviewLoading(false);
     }
-  }, [checkAdminSessionTimeout, updateAdminSessionTimestamp]);
+  }, []);
 
-  // Restore authentication from sessionStorage on mount
+  const loadUsers = useCallback(async () => {
+    setUsersLoading(true);
+    try {
+      const data = await getAdminUsers({
+        page,
+        limit: DEFAULT_LIMIT,
+        search: search.trim() || undefined,
+        year,
+        month,
+        sort,
+        order,
+        has_resume: hasResume ?? undefined,
+        active_only: activeOnly,
+        failed_only: failedOnly,
+      });
+      setUsersData(data);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to load users');
+      setUsersData(null);
+    } finally {
+      setUsersLoading(false);
+    }
+  }, [page, search, year, month, sort, order, hasResume, activeOnly, failedOnly]);
+
+  const loadCostData = useCallback(async () => {
+    setCostError(null);
+    try {
+      const data = await getAdminUserCosts({ year, month, page: costPage, limit: 20 });
+      setCostData(data);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to load costs';
+      setCostError(msg);
+      toast.error(msg);
+      setCostData(null);
+    }
+  }, [year, month, costPage]);
+
+  const loadResumes = useCallback(async () => {
+    try {
+      const data = await listAdminResumes({ page: resumePage, limit: 20 });
+      setResumes(data.resumes);
+      setResumePagination(data.pagination);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to load resumes');
+    }
+  }, [resumePage]);
+
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    await Promise.all([loadOverview(), loadUsers()]);
+    setIsRefreshing(false);
+    toast.success('Refreshed');
+  }, [loadOverview, loadUsers]);
+
   useEffect(() => {
-    // If password was initialized from sessionStorage, try to auto-login
-    if (password) {
-      handleAutoLogin(password);
-    } else {
-      // No valid session, stop loading
-      setIsLoading(false);
-    }
+    loadOverview();
+  }, [loadOverview]);
 
-    // Set up periodic session timeout check (every minute)
-    const timeoutCheckInterval = setInterval(() => {
-      if (isAuthenticated) {
-        if (!checkAdminSessionTimeout()) {
-          // Session expired, state already updated by checkAdminSessionTimeout
-        }
-      }
-    }, 60000); // Check every minute
+  useEffect(() => {
+    loadUsers();
+  }, [loadUsers]);
 
-    return () => {
-      clearInterval(timeoutCheckInterval);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only run once on mount - password is initialized synchronously
+  useEffect(() => {
+    setPage(1);
+  }, [search, hasResume, activeOnly, failedOnly]);
 
-  const handleLogin = async () => {
-    if (!password.trim()) {
-      toast.error('Please enter a password');
-      return;
-    }
-
-    setIsLoading(true);
+  const handleOpenDetail = useCallback(async (row: AdminUserRow) => {
+    setDrawerOpen(true);
+    setUserSummary(null);
+    setSummaryLoading(true);
     try {
-      const [data, stats] = await Promise.all([
-        listAdminResumes(password),
-        getAdminJobStats(password),
-      ]);
-      const redisResumes = data.resumes;
-      
-      // Get cached resumes from local storage
-      const cachedResumes = getCachedAdminResumes();
-      
-      // Merge: combine Redis + cached, remove duplicates by resume_id
-      // Use CachedResume internally to preserve LaTeX/user_id
-      const resumeMap = new Map<string, CachedResume>();
-      
-      // Add cached resumes first
-      cachedResumes.forEach((resume: CachedResume) => {
-        resumeMap.set(resume.resume_id, resume);
-      });
-      
-      // Add Redis resumes (override cached if same ID)
-      // But preserve LaTeX/user_id from cache if they exist
-      redisResumes.forEach((resume: Resume) => {
-        const existingCached = resumeMap.get(resume.resume_id);
-        if (existingCached) {
-          // Preserve LaTeX and user_id from cache
-          resumeMap.set(resume.resume_id, {
-            ...resume,
-            ...(existingCached.latex && { latex: existingCached.latex }),
-            ...(existingCached.user_id && { user_id: existingCached.user_id }),
-          });
-        } else {
-          resumeMap.set(resume.resume_id, resume);
-        }
-      });
-      
-      // Convert to array and sort chronologically (newest first)
-      const mergedResumes = Array.from(resumeMap.values()).sort((a, b) => {
-        const dateA = new Date(a.created_at).getTime();
-        const dateB = new Date(b.created_at).getTime();
-        return dateB - dateA; // Newest first
-      });
-      
-      // Update state with merged resumes (cast to Resume[] for display)
-      setResumes(mergedResumes as Resume[]);
-      
-      // Update cache with merged data - save as CachedResume[]
-      saveCachedAdminResumes(mergedResumes);
-      
-      setJobStats(stats);
-      setIsAuthenticated(true);
-      // Store password in sessionStorage for use in detail pages
-      sessionStorage.setItem('admin_password', password);
-      updateAdminSessionTimestamp(); // Set session timestamp
-      toast.success('Admin access granted');
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to authenticate';
-      toast.error(errorMessage);
-      setIsAuthenticated(false);
-      sessionStorage.removeItem('admin_password');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleRefresh = async (showToast: boolean = true) => {
-    if (!password.trim()) return;
-    
-    // Check session timeout before action
-    if (!checkAdminSessionTimeout()) {
-      return;
-    }
-    
-    setIsLoading(true);
-    try {
-      // Fetch from Redis (resumes + job stats)
-      const [data, stats] = await Promise.all([
-        listAdminResumes(password),
-        getAdminJobStats(password),
-      ]);
-      const redisResumes = data.resumes;
-      
-      // Get cached resumes from local storage
-      const cachedResumes = getCachedAdminResumes();
-      
-      // Merge: combine Redis + cached, remove duplicates by resume_id
-      // Use CachedResume internally to preserve LaTeX/user_id
-      const resumeMap = new Map<string, CachedResume>();
-      
-      // Add cached resumes first (they might be older but still valid)
-      cachedResumes.forEach((resume: CachedResume) => {
-        resumeMap.set(resume.resume_id, resume);
-      });
-      
-      // Add Redis resumes (they override cached if same ID, ensuring latest data)
-      // But preserve LaTeX/user_id from cache if they exist
-      redisResumes.forEach((resume: Resume) => {
-        const existingCached = resumeMap.get(resume.resume_id);
-        if (existingCached) {
-          // Preserve LaTeX and user_id from cache
-          resumeMap.set(resume.resume_id, {
-            ...resume,
-            ...(existingCached.latex && { latex: existingCached.latex }),
-            ...(existingCached.user_id && { user_id: existingCached.user_id }),
-          });
-        } else {
-          resumeMap.set(resume.resume_id, resume);
-        }
-      });
-      
-      // Convert to array and sort chronologically (newest first)
-      const mergedResumes = Array.from(resumeMap.values()).sort((a, b) => {
-        const dateA = new Date(a.created_at).getTime();
-        const dateB = new Date(b.created_at).getTime();
-        return dateB - dateA; // Newest first
-      });
-      
-      // Update state with merged resumes (cast to Resume[] for display)
-      setResumes(mergedResumes as Resume[]);
-      
-      // Update cache with merged data (for next refresh) - save as CachedResume[]
-      saveCachedAdminResumes(mergedResumes);
-      
-      setJobStats(stats);
-      updateAdminSessionTimestamp(); // Update timestamp on action
-      if (showToast) {
-        toast.success('Resume list refreshed');
-      }
-    } catch (error) {
-      // On error, still show cached resumes if available
-      const cachedResumes = getCachedAdminResumes();
-      if (cachedResumes.length > 0) {
-        setResumes(cachedResumes);
-      }
-      
-      const errorMessage = error instanceof Error ? error.message : 'Failed to refresh';
-      toast.error(errorMessage);
-      if (errorMessage.includes('Invalid admin password')) {
-        setIsAuthenticated(false);
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleDownload = async (resume: Resume, format: 'pdf' | 'latex') => {
-    if (!password.trim()) return;
-
-    // Check session timeout before action
-    if (!checkAdminSessionTimeout()) {
-      return;
-    }
-
-    try {
-      const blob = await downloadResume(resume.resume_id, format, password);
-      updateAdminSessionTimestamp(); // Update timestamp on action
-      
-      // Extract filename from Content-Disposition header or use resume filename
-      let downloadFilename = format === 'pdf' 
-        ? resume.filename 
-        : resume.filename.replace('.pdf', '.tex');
-      
-      // Fallback: if filename is missing or just "resume", generate from resume data
-      if (!downloadFilename || downloadFilename === 'resume.pdf' || downloadFilename === 'resume.tex') {
-        const safeFirst = resume.first_name?.replace(/[^\w]/g, '').replace(/\b\w/g, l => l.toUpperCase()) || 'Unknown';
-        const safeLast = resume.last_name?.replace(/[^\w]/g, '').replace(/\b\w/g, l => l.toUpperCase()) || 'Unknown';
-        downloadFilename = format === 'pdf'
-          ? `${safeFirst}_${safeLast}_resume.pdf`
-          : `${safeFirst}_${safeLast}_resume.tex`;
-      }
-      
-      // Create download link
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = downloadFilename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-      
-      toast.success(`Downloaded ${format.toUpperCase()} successfully`);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to download';
-      toast.error(errorMessage);
-      if (errorMessage.includes('Invalid admin password')) {
-        setIsAuthenticated(false);
-      }
-    }
-  };
-
-  const handleDeleteFromRedis = async (resume: Resume) => {
-    if (!password.trim()) return;
-    
-    // Check session timeout before action
-    if (!checkAdminSessionTimeout()) {
-      return;
-    }
-    
-    if (!confirm(`Are you sure you want to delete the resume for ${resume.first_name} ${resume.last_name} from Redis? This action cannot be undone.`)) {
-      return;
-    }
-
-    setDeletingId(resume.resume_id);
-    try {
-      await deleteResume(resume.resume_id, password);
-      updateAdminSessionTimestamp(); // Update timestamp on action
-      
-      // DO NOT remove from local cache - local storage should remain independent
-      // The cache will be preserved and can be merged back on refresh
-      
-      // Update state immediately (optimistic update) - remove from display
-      setResumes(prevResumes => prevResumes.filter((r: Resume) => r.resume_id !== resume.resume_id));
-      
-      toast.success('Resume deleted from Redis successfully');
-      // Refresh list silently (no toast) to sync with Redis
-      // This will merge Redis (empty) + cached (still has the resume) = cached resume will show again
-      await handleRefresh(false);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to delete';
-      toast.error(errorMessage);
-      if (errorMessage.includes('Invalid admin password')) {
-        setIsAuthenticated(false);
-      }
-      // Refresh on error to restore state
-      await handleRefresh(false);
-    } finally {
-      setDeletingId(null);
-    }
-  };
-
-  const handleDeleteFromLocalStorage = (resume: Resume) => {
-    if (!confirm(`Delete from Local Storage?\n\nThis will delete the resume for ${resume.first_name} ${resume.last_name} from your browser's local storage. This only affects your local browser, not the Redis database.\n\nThis action cannot be undone.`)) {
-      return;
-    }
-    
-    try {
-      // Remove the specific resume from admin cache ONLY
-      // This does NOT affect the user's settings resume (stored separately at 'tailortom:resume_latex')
-      const cachedResumes = getCachedAdminResumes();
-      const updatedCache = cachedResumes.filter((r: CachedResume) => r.resume_id !== resume.resume_id);
-      saveCachedAdminResumes(updatedCache);
-      
-      // Update state to remove from display
-      setResumes(prevResumes => prevResumes.filter((r: Resume) => r.resume_id !== resume.resume_id));
-      
-      toast.success('Resume deleted from admin cache successfully');
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to delete from local storage';
-      toast.error(errorMessage);
-    }
-  };
-
-  const handleResetDailyLimit = () => {
-    if (!confirm('Reset your daily job count? This will allow you to create more jobs today.')) {
-      return;
-    }
-    
-    clearDailyJobCount();
-    setDailyLimit(canCreateJobWithinDailyLimit());
-    toast.success('Daily job count reset successfully');
-  };
-
-  const formatDate = (dateString: string) => {
-    try {
-      const date = new Date(dateString);
-      return date.toLocaleString();
+      const summary = await getAdminUserSummary(row.user_id);
+      setUserSummary(summary);
     } catch {
-      return dateString;
+      setUserSummary(null);
+    } finally {
+      setSummaryLoading(false);
     }
-  };
+  }, []);
 
-  // Show loading state while checking authentication
-  if (isLoading) {
-    return (
-      <div className="container mx-auto py-8 max-w-md">
-        <Card>
-          <CardHeader>
-            <Skeleton className="h-6 w-32" />
-            <Skeleton className="h-4 w-48 mt-2" />
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Skeleton className="h-4 w-16" />
-              <Skeleton className="h-10 w-full" />
-            </div>
-            <Skeleton className="h-10 w-full" />
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-  
-  if (!isAuthenticated) {
-    return (
-      <div className="container mx-auto py-8 max-w-md">
-        <Card>
-          <CardHeader>
-            <CardTitle>Admin Panel</CardTitle>
-            <CardDescription>Enter password to access saved resumes</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    handleLogin();
-                  }
-                }}
-                placeholder="Enter admin password"
-              />
-            </div>
-            <Button onClick={handleLogin} disabled={isLoading} className="w-full">
-              {isLoading ? 'Authenticating...' : 'Access Admin Panel'}
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  const handleSort = useCallback((field: string) => {
+    setOrder((prev) => (sort === field && prev === 'asc' ? 'desc' : 'asc'));
+    setSort(field);
+    setPage(1);
+  }, [sort]);
+
+  useEffect(() => {
+    loadCostData();
+  }, [loadCostData]);
+
+  useEffect(() => {
+    loadResumes();
+  }, [loadResumes]);
+
+  const passRatePct = jobStats && jobStats.processed > 0
+    ? (jobStats.completed / jobStats.processed) * 100
+    : 0;
+  const monthlyCostUsd = costData?.summary?.month_total_cost_usd ?? 0;
+  const v3FailRatePct = v3Health && (v3Health.v3_jobs_completed + v3Health.v3_jobs_failed) > 0
+    ? (v3Health.v3_jobs_failed / (v3Health.v3_jobs_completed + v3Health.v3_jobs_failed)) * 100
+    : undefined;
 
   return (
-    <div className="container mx-auto py-8 max-w-6xl">
-      <div className="space-y-6">
-        <div className="flex justify-between items-center">
-          <div>
-            <h1 className="text-3xl font-bold">Admin Panel</h1>
-            <p className="text-muted-foreground mt-2">
-              View and manage saved resumes
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <Button onClick={() => handleRefresh(true)} disabled={isLoading} variant="outline">
-              {isLoading ? 'Loading...' : 'Refresh'}
-            </Button>
-            <Button 
-              onClick={() => {
-                setIsAuthenticated(false);
-                sessionStorage.removeItem('admin_password');
-                sessionStorage.removeItem('admin_session_timestamp');
-              }} 
-              variant="outline"
-            >
-              Logout
-            </Button>
-          </div>
+    <div className="container mx-auto py-6 max-w-7xl space-y-6">
+      <div className="flex justify-between items-start">
+        <div>
+          <h1 className="text-3xl font-bold">Admin</h1>
+          <p className="text-muted-foreground mt-1">User-centric operations workspace</p>
         </div>
+      </div>
 
-        {/* Job Statistics Card */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Job Statistics (Redis)</CardTitle>
-            <CardDescription>
-              Global counters for optimization jobs. Refreshed when you load or refresh the page.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {jobStats !== null ? (
-              <>
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Processed</p>
-                    <p className="text-2xl font-semibold">{jobStats.processed}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Completed</p>
-                    <p className="text-2xl font-semibold text-emerald-600 dark:text-emerald-400">{jobStats.completed}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Failed</p>
-                    <p className="text-2xl font-semibold text-red-600 dark:text-red-400">{jobStats.failed}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Pass rate</p>
-                    <p className="text-2xl font-semibold">
-                      {jobStats.processed > 0
-                        ? `${((jobStats.completed / jobStats.processed) * 100).toFixed(1)}%`
-                        : '—'}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Fail rate</p>
-                    <p className="text-2xl font-semibold">
-                      {jobStats.processed > 0
-                        ? `${((jobStats.failed / jobStats.processed) * 100).toFixed(1)}%`
-                        : '—'}
-                    </p>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <p className="text-sm text-muted-foreground">Load or refresh to see job statistics.</p>
-            )}
-          </CardContent>
-        </Card>
+      <AdminTopBar
+        search={search}
+        onSearchChange={setSearch}
+        year={year}
+        month={month}
+        onMonthChange={(m) => { setMonth(m); setPage(1); }}
+        onYearChange={(y) => { setYear(y); setPage(1); }}
+        onRefresh={handleRefresh}
+        hasResume={hasResume}
+        onHasResumeChange={(v) => { setHasResume(v); setPage(1); }}
+        activeOnly={activeOnly}
+        onActiveOnlyChange={(v) => { setActiveOnly(v); setPage(1); }}
+        failedOnly={failedOnly}
+        onFailedOnlyChange={(v) => { setFailedOnly(v); setPage(1); }}
+        isRefreshing={isRefreshing}
+      />
 
-        {/* Daily Job Limit Management Card */}
+      {overviewLoading ? (
+        <Skeleton className="h-20 w-full" />
+      ) : (
+        <AdminOverviewStrip
+          processed={jobStats?.processed ?? 0}
+          completed={jobStats?.completed ?? 0}
+          failed={jobStats?.failed ?? 0}
+          cancelled={jobStats?.cancelled ?? 0}
+          passRatePct={passRatePct}
+          monthlyCostUsd={monthlyCostUsd}
+          v3FailRatePct={v3FailRatePct}
+          avgPasses={v3Health?.avg_passes_done}
+        />
+      )}
+
+      <Tabs defaultValue="users" className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="users">Users</TabsTrigger>
+          <TabsTrigger value="health">Optimizer Health</TabsTrigger>
+          <TabsTrigger value="costs">Costs</TabsTrigger>
+          <TabsTrigger value="resumes">Resumes</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="users" className="space-y-4">
+          {usersLoading ? (
+            <Skeleton className="h-64 w-full" />
+          ) : usersData ? (
+            <AdminUsersTable
+              users={usersData.users}
+              pagination={usersData.pagination}
+              onPagePrev={() => setPage((p) => Math.max(1, p - 1))}
+              onPageNext={() => setPage((p) => p + 1)}
+              onOpenDetail={handleOpenDetail}
+              sort={sort}
+              order={order}
+              onSort={handleSort}
+            />
+          ) : (
+            <p className="text-muted-foreground">No user data.</p>
+          )}
+        </TabsContent>
+
+        <TabsContent value="health">
+          <AdminHealthPanel health={v3Health} />
+        </TabsContent>
+
+        <TabsContent value="costs" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Per-User Cost Analytics</CardTitle>
+              <CardDescription>LLM cost by user. Month is UTC.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-4">
+                <select
+                  className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={month}
+                  onChange={(e) => { setMonth(Number(e.target.value)); setCostPage(1); }}
+                >
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((m) => (
+                    <option key={m} value={m}>
+                      {new Date(Date.UTC(year, m - 1, 1)).toLocaleString('default', { month: 'long' })} {year}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={year}
+                  onChange={(e) => { setYear(Number(e.target.value)); setCostPage(1); }}
+                >
+                  {Array.from({ length: 5 }, (_, i) => year - i).map((y) => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+                </select>
+              </div>
+              {costError && <p className="text-sm text-destructive">{costError}</p>}
+              {costData && (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <p className="text-sm text-muted-foreground">Month total (UTC)</p>
+                      <p className="text-2xl font-semibold">{formatUsdCompact(costData.summary.month_total_cost_usd)}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Lifetime total</p>
+                      <p className="text-2xl font-semibold">{formatUsdCompact(costData.summary.lifetime_total_cost_usd)}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Users with cost</p>
+                      <p className="text-2xl font-semibold">{costData.summary.users_with_cost_count}</p>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm border-collapse">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left py-2 pr-4 font-medium">User</th>
+                          <th className="text-right py-2 px-2 font-medium">Month cost</th>
+                          <th className="text-right py-2 px-2 font-medium">Lifetime cost</th>
+                          <th className="text-left py-2 pl-2 font-medium">Last cost job</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {costData.users.map((row) => (
+                          <tr key={row.user_id} className="border-b border-border/50">
+                            <td className="py-2 pr-4">
+                              <span className="font-medium">{row.first_name} {row.last_name}</span>
+                              <span className="text-muted-foreground block text-xs">{row.email}</span>
+                            </td>
+                            <td className="text-right py-2 px-2">{formatUsdCompact(row.month_cost_usd)}</td>
+                            <td className="text-right py-2 px-2">{formatUsdCompact(row.total_cost_usd)}</td>
+                            <td className="py-2 pl-2 text-muted-foreground">
+                              {row.last_cost_job_at ? formatLocalDateSafe(row.last_cost_job_at, '—') : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <PaginationControls
+                    pagination={costData.pagination}
+                    onPrev={() => setCostPage((p) => Math.max(1, p - 1))}
+                    onNext={() => setCostPage((p) => p + 1)}
+                    itemLabel="users"
+                  />
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="resumes" className="space-y-4">
+          {resumes.length === 0 ? (
+            <Card>
+              <CardContent className="py-8 text-center text-muted-foreground">No resumes found</CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-4">
+              {resumes.map((resume) => (
+                <Card key={resume.user_id}>
+                  <CardContent className="pt-6">
+                    <div className="flex justify-between items-start gap-4">
+                      <div className="flex items-start gap-4 min-w-0">
+                        {resume.avatar_url ? (
+                          <Image
+                            src={resume.avatar_url}
+                            alt={`${resume.first_name} ${resume.last_name}`}
+                            width={48}
+                            height={48}
+                            className="rounded-full shrink-0"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground text-lg font-medium">
+                            {(resume.first_name?.[0] || resume.email[0] || '?').toUpperCase()}
+                          </div>
+                        )}
+                        <div className="space-y-1 min-w-0">
+                          <h3 className="font-semibold text-lg">{resume.first_name} {resume.last_name}</h3>
+                          <p className="text-sm text-muted-foreground truncate">{resume.email}</p>
+                          <p className="text-sm text-muted-foreground">Saved: {formatLocalDateSafe(resume.created_at)}</p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button onClick={() => router.push(`/admin/resume/${resume.user_id}`)} variant="default" size="sm">
+                          View
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={async () => {
+                            try {
+                              const data = await getAdminResume(resume.user_id);
+                              const filename = resumePdfFilename(resume.first_name, resume.last_name);
+                              const blob = await compileLatexToPdf(data.latex, filename);
+                              const url = window.URL.createObjectURL(blob);
+                              const a = document.createElement('a');
+                              a.href = url;
+                              a.download = filename;
+                              document.body.appendChild(a);
+                              a.click();
+                              document.body.removeChild(a);
+                              window.URL.revokeObjectURL(url);
+                              toast.success('Downloaded PDF');
+                            } catch (e) {
+                              toast.error(e instanceof Error ? e.message : 'Download failed');
+                            }
+                          }}
+                        >
+                          Download PDF
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+              <PaginationControls
+                pagination={resumePagination}
+                onPrev={() => setResumePage((p) => Math.max(1, p - 1))}
+                onNext={() => setResumePage((p) => p + 1)}
+                itemLabel="resumes"
+              />
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
+
+      {user && (
         <Card>
           <CardHeader>
             <CardTitle>Daily Job Limit (Your Account)</CardTitle>
-            <CardDescription>
-              Manage your personal daily job limit. This only affects your browser.
-            </CardDescription>
+            <CardDescription>Stored in the database; limit resets at midnight UTC.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground">
-                  Completed today: {dailyLimit.completedToday} / {dailyLimit.limit}
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  Pending/Processing: {dailyLimit.pendingAndProcessing}
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  Total used: {dailyLimit.completedToday + dailyLimit.pendingAndProcessing} / {dailyLimit.limit}
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  Remaining: {dailyLimit.remaining}
-                </p>
-              </div>
-              <Button 
-                onClick={handleResetDailyLimit}
-                variant="outline"
-                size="sm"
-              >
-                Reset Daily Count
-              </Button>
+          <CardContent className="flex items-center justify-between">
+            <div className="text-sm text-muted-foreground space-y-1">
+              <p>Completed today: {user.daily_completions_today} / {user.daily_job_limit}</p>
+              <p>Pending/Processing: {user.active_jobs_count}</p>
+              <p>Remaining: {user.daily_limit_remaining}</p>
             </div>
-            {!dailyLimit.canCreate && (
-              <p className="text-sm text-amber-600">
-                Daily limit reached. Click &quot;Reset Daily Count&quot; to bypass the limit for today.
-              </p>
-            )}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isResettingDaily}
+              onClick={async () => {
+                if (!confirm('Reset your daily job count?')) return;
+                setIsResettingDaily(true);
+                try {
+                  const updated = await resetMyDailyCount(user);
+                  setUserFromProfile(updated);
+                  toast.success('Daily count reset');
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : 'Reset failed');
+                } finally {
+                  setIsResettingDaily(false);
+                }
+              }}
+            >
+              {isResettingDaily ? 'Resetting…' : 'Reset Daily Count'}
+            </Button>
           </CardContent>
         </Card>
+      )}
 
-        {resumes.length === 0 ? (
-          <Card>
-            <CardContent className="py-8 text-center text-muted-foreground">
-              No resumes found
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="space-y-4">
-            {resumes.map((resume) => (
-              <Card key={resume.resume_id}>
-                <CardContent className="pt-6">
-                  <div className="flex justify-between items-start">
-                    <div className="space-y-1">
-                      <h3 className="font-semibold text-lg">
-                        {resume.first_name} {resume.last_name}
-                      </h3>
-                      <p className="text-sm text-muted-foreground">
-                        Saved: {formatDate(resume.created_at)}
-                      </p>
-                      <p className="text-sm text-muted-foreground">
-                        ID: {resume.resume_id}
-                      </p>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button
-                        onClick={() => router.push(`/admin/resume/${resume.resume_id}`)}
-                        variant="default"
-                        size="sm"
-                      >
-                        View
-                      </Button>
-                      <Button
-                        onClick={() => handleDownload(resume, 'pdf')}
-                        variant="outline"
-                        size="sm"
-                      >
-                        Download PDF
-                      </Button>
-                      <Button
-                        onClick={() => handleDownload(resume, 'latex')}
-                        variant="outline"
-                        size="sm"
-                      >
-                        Download LaTeX
-                      </Button>
-                      <Button
-                        onClick={() => handleDeleteFromLocalStorage(resume)}
-                        variant="destructive"
-                        size="sm"
-                        title="Delete from admin's local storage"
-                      >
-                        Delete from Local Storage
-                      </Button>
-                      <Button
-                        onClick={() => handleDeleteFromRedis(resume)}
-                        variant="destructive"
-                        size="sm"
-                        disabled={deletingId === resume.resume_id}
-                        title="Delete from Redis (backend database)"
-                      >
-                        {deletingId === resume.resume_id ? 'Deleting...' : 'Delete from Redis'}
-                      </Button>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
-
-        <div className="text-sm text-muted-foreground text-center">
-          Total: {resumes.length} resume{resumes.length !== 1 ? 's' : ''}
-        </div>
-      </div>
+      <AdminUserDetailDrawer
+        open={drawerOpen}
+        onClose={() => { setDrawerOpen(false); setUserSummary(null); }}
+        summary={userSummary}
+        loading={summaryLoading}
+      />
     </div>
   );
 }
 
+export default function AdminPage() {
+  return (
+    <RequireAuth requireAdmin>
+      <AdminContent />
+    </RequireAuth>
+  );
+}

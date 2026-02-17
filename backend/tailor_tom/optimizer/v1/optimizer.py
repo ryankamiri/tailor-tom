@@ -19,6 +19,7 @@ import fitz  # PyMuPDF
 from pydantic import BaseModel, Field
 
 from tailor_tom.config import settings
+from tailor_tom.llm_runtime import configure_dspy as _configure_dspy
 from tailor_tom.latex_compiler import compile_latex, CompileResult, validate_latex
 from tailor_tom.layout_analyzer import check_quality, QualityResult, extract_line_metrics, extract_items_from_latex
 from api.storage import update_job_status
@@ -1488,45 +1489,13 @@ def configure_dspy(
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
 ) -> None:
-    """Configure DSPy with the specified model.
-    
-    This function is idempotent - if DSPy is already configured, it will not reconfigure.
-    This allows it to be called safely in each task execution.
-
-    Args:
-        model_name: Model identifier (e.g., "openai/gpt-5-mini").
-        api_key: OpenAI API key. If not provided, uses settings.
-        max_tokens: Maximum tokens for LLM responses. Defaults to settings.max_tokens.
-        temperature: Temperature for generation. Defaults to settings.temperature.
-    """
-    # Check if DSPy is already configured
-    # DSPy stores the LM in dspy.settings.lm - if it exists, we're already configured
-    try:
-        if hasattr(dspy.settings, 'lm') and dspy.settings.lm is not None:
-            return  # Already configured, skip
-    except (AttributeError, Exception):
-        # If we can't check, proceed with configuration
-        pass
-    
-    model_name = model_name or settings.model_name
-    api_key = api_key or settings.openai_api_key
-    max_tokens = max_tokens or settings.max_tokens
-    temperature = temperature or settings.temperature
-
-    try:
-        lm = dspy.LM(
-            model=model_name,
-            api_key=api_key,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            cache=False
-        )
-        dspy.configure(lm=lm)
-    except Exception as e:
-        error_type = type(e).__name__
-        error_details = str(e)
-        logger.error(f"Failed to configure DSPy: {error_type}: {error_details}", exc_info=True)
-        raise
+    """Re-export from llm_runtime for backward compatibility. Prefer tailor_tom.llm_runtime.configure_dspy."""
+    _configure_dspy(
+        model_name=model_name,
+        api_key=api_key,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
 
 
 def optimize_resume(

@@ -1,11 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
-import { getStoredJobs, cleanupOldJobs, StoredJob } from '@/lib/storage';
+import { listJobs, JobListItem } from '@/lib/api';
+import { RequireAuth } from '@/components/layout/require-auth';
+import type { JobStatusFilter } from '@/components/jobs/job-list';
 
-// Dynamically import JobList with SSR disabled to avoid hydration issues
-// JobList depends on localStorage which is not available on the server
 const JobList = dynamic(() => import('@/components/jobs/job-list').then(mod => ({ default: mod.JobList })), {
   ssr: false,
   loading: () => (
@@ -16,42 +16,94 @@ const JobList = dynamic(() => import('@/components/jobs/job-list').then(mod => (
   )
 });
 
-export default function JobsPage() {
-  // Use lazy initializer to load jobs from localStorage on mount
-  const [jobs, setJobs] = useState<StoredJob[]>(() => {
-    cleanupOldJobs();
-    return getStoredJobs();
-  });
+function JobsContent() {
+  const [jobs, setJobs] = useState<JobListItem[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<JobStatusFilter>('all');
+  const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
 
-  // Refresh jobs from localStorage
-  const refreshJobs = () => {
-    cleanupOldJobs();
-    setJobs(getStoredJobs());
-  };
+  const refreshJobs = useCallback(async (status?: JobStatusFilter) => {
+    const filter = status ?? statusFilter;
+    setIsLoading(true);
+    try {
+      const res = await listJobs({
+        limit: 20,
+        status: filter === 'all' ? undefined : filter,
+      });
+      setJobs(res.items);
+      setNextCursor(res.next_cursor);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [statusFilter]);
 
-  // Refresh jobs periodically and on focus
-  useEffect(() => {
-
-    // Refresh on window focus
-    window.addEventListener('focus', refreshJobs);
-
-    // Refresh every 2 seconds to catch updates from global polling
-    const interval = setInterval(refreshJobs, 2000);
-
-    return () => {
-      window.removeEventListener('focus', refreshJobs);
-      clearInterval(interval);
-    };
+  const handleFilterChange = useCallback((newFilter: JobStatusFilter) => {
+    setStatusFilter(newFilter);
+    setNextCursor(null);
+    setIsLoading(true);
+    listJobs({
+      limit: 20,
+      status: newFilter === 'all' ? undefined : newFilter,
+    }).then((res) => {
+      setJobs(res.items);
+      setNextCursor(res.next_cursor);
+    }).finally(() => setIsLoading(false));
   }, []);
 
-  const handleJobsChange = () => {
+  const loadMore = useCallback(async () => {
+    if (!nextCursor || isLoadingMore) return;
+    setIsLoadingMore(true);
+    try {
+      const res = await listJobs({
+        limit: 20,
+        cursor: nextCursor,
+        status: statusFilter === 'all' ? undefined : statusFilter,
+      });
+      setJobs((prev) => [...prev, ...res.items]);
+      setNextCursor(res.next_cursor);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [isLoadingMore, nextCursor, statusFilter]);
+
+  useEffect(() => {
     refreshJobs();
-  };
+  }, [refreshJobs]);
+
+  // Refetch job list when a job completes or fails (notified by JobPollingProvider)
+  useEffect(() => {
+    const handler = () => refreshJobs();
+    window.addEventListener('tailortom:job-status-changed', handler);
+    return () => window.removeEventListener('tailortom:job-status-changed', handler);
+  }, [refreshJobs]);
 
   return (
     <div className="container mx-auto py-8 max-w-7xl">
-      <JobList jobs={jobs} onJobsChange={handleJobsChange} />
+      {isLoading ? (
+        <div className="space-y-4">
+          <div className="h-8 w-48 animate-pulse bg-muted rounded" />
+          <div className="h-10 w-full animate-pulse bg-muted rounded" />
+        </div>
+      ) : (
+        <JobList
+          jobs={jobs}
+          statusFilter={statusFilter}
+          onStatusFilterChange={handleFilterChange}
+          onJobsChange={() => refreshJobs()}
+          hasMore={!!nextCursor}
+          onLoadMore={loadMore}
+          isLoadingMore={isLoadingMore}
+        />
+      )}
     </div>
   );
 }
 
+export default function JobsPage() {
+  return (
+    <RequireAuth>
+      <JobsContent />
+    </RequireAuth>
+  );
+}

@@ -35,6 +35,7 @@ COPY backend/ /app/
 
 EXPOSE 8000
 
-# Run the FastAPI application
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run migrations then API (start-api.sh); worker uses separate command
+RUN chmod +x /app/scripts/start-api.sh
+CMD ["/app/scripts/start-api.sh"]
 

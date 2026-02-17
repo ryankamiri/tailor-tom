@@ -22,6 +22,16 @@ export function JobStatusView({ status, errorMessage }: JobStatusViewProps) {
     );
   }
 
+  if (status === 'cancelled') {
+    return (
+      <Card>
+        <CardContent className="pt-6">
+          <p className="text-muted-foreground">Job was cancelled by user.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
   if (status === 'processing') {
     return (
       <Card>

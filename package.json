@@ -1,0 +1,15 @@
+{
+  "name": "tailortom",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n api,worker,web -c blue,green,magenta \"npm run dev:api\" \"npm run dev:worker\" \"npm run dev:web\"",
+    "dev:api": "cd backend && ../.venv/bin/uvicorn api.main:app --reload --host 0.0.0.0",
+    "dev:worker": "cd backend && ../.venv/bin/watchfiles --filter python '../.venv/bin/celery -A worker.app worker -n worker.dev@%h --loglevel=info --queues local --pool=solo' .",
+    "dev:web": "cd frontend && npm run dev",
+    "dev:worker:kill": "pkill -f 'celery.*worker' || true"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "nodemon": "^3.1.0"
+  }
+}

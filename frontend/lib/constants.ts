@@ -16,12 +16,6 @@ export function parseTargetPages(value: unknown): TargetPages {
   return DEFAULT_TARGET_PAGES;
 }
 
-export const MAX_JOBS = 50;
-export const JOB_STORAGE_KEY = `${STORAGE_PREFIX}jobs`;
-export const JOB_MAX_AGE_DAYS = 7;
-export const DAILY_JOB_LIMIT = 6; // Max completed jobs per day
-export const DAILY_JOB_COMPLETIONS_KEY = `${STORAGE_PREFIX}daily_job_completions`;
-
 // Bullet lines configuration
 export const MIN_BULLET_LINES = 1;
 export const MAX_BULLET_LINES = 5;
@@ -34,6 +28,7 @@ export const STATUS_COLORS = {
   processing: 'bg-blue-100 text-blue-800 border-blue-200',
   completed: 'bg-emerald-100 text-emerald-800 border-emerald-200',
   failed: 'bg-red-100 text-red-800 border-red-200',
+  cancelled: 'bg-slate-100 text-slate-700 border-slate-200',
 } as const;
 
 export const STATUS_LABELS = {
@@ -41,10 +36,9 @@ export const STATUS_LABELS = {
   processing: 'Processing',
   completed: 'Completed',
   failed: 'Failed',
+  cancelled: 'Cancelled',
 } as const;
 
-// Admin session timeout: 30 minutes
-export const ADMIN_SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-
-export const ADMIN_RESUMES_STORAGE_KEY = `${STORAGE_PREFIX}admin_resumes`;
+// Job polling (active jobs: pending + processing)
+export const JOB_POLL_INTERVAL_SECONDS = 20;
 
