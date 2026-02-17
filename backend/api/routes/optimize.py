@@ -12,7 +12,7 @@ from api.db_models import User
 from api.job_repository import create_job, generate_job_id, get_job_by_id, update_job_status as repo_update_job_status
 from api.cache import invalidate_user_job_list_cache, invalidate_user_profile_cache
 from worker.tasks import optimize_resume_task
-from tailor_tom.latex_compiler import validate_latex
+from tailor_tom.latex_compiler import compile_latex
 from tailor_tom.config import settings
 from tailor_tom.constants import DAILY_JOB_LIMIT
 
@@ -29,8 +29,9 @@ async def create_optimization_job(
 ):
     """Create a new optimization job."""
 
-    is_valid, error_message = validate_latex(request.resume_latex)
-    if not is_valid:
+    compile_result = compile_latex(request.resume_latex)
+    if not compile_result.success:
+        error_message = compile_result.error_message or "LaTeX compilation failed"
         logger.error(f"Invalid LaTeX in optimization request: {error_message}")
         raise HTTPException(status_code=400, detail=f"Invalid LaTeX: {error_message}")
 

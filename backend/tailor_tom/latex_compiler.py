@@ -321,10 +321,11 @@ def _count_pdf_pages(pdf_bytes: bytes) -> int:
 
 
 def validate_latex(content: str) -> tuple[bool, Optional[str]]:
-    """Perform a quick validation of LaTeX syntax.
+    """[Deprecated] Perform a quick validation of LaTeX syntax.
 
-    This is a lightweight check that doesn't do full compilation.
-    It checks for basic structural issues.
+    Deprecated in favor of compile-based validation (`compile_latex`) because
+    simple structural checks can produce false negatives for valid documents.
+    This helper remains only for backwards compatibility.
 
     Args:
         content: LaTeX document content.
@@ -379,4 +380,3 @@ def save_latex(content: str, output_path: str | Path) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(content, encoding="utf-8")
-
