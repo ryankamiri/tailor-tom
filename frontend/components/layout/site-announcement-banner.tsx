@@ -3,7 +3,6 @@
 import Link from 'next/link';
 import { useSyncExternalStore, useState } from 'react';
 import { X } from 'lucide-react';
-import { Button } from '@/components/ui/button';
 import { getActiveSiteAnnouncement } from '@/lib/site-announcements';
 
 function getDismissKey(announcementId: string): string {
@@ -44,8 +43,8 @@ export function SiteAnnouncementBanner() {
   const [dismissedInSession, setDismissedInSession] = useState(false);
   const isClientReady = useSyncExternalStore(
     (cb) => clientReadyStore.subscribe(cb),
-    getServerSnapshot,
-    getClientSnapshot
+    getClientSnapshot,
+    getServerSnapshot
   );
 
   let hidden = true;
@@ -59,48 +58,58 @@ export function SiteAnnouncementBanner() {
 
   const dismiss = () => {
     if (!announcement) return;
+    const key = getDismissKey(announcement.id);
     try {
-      localStorage.setItem(getDismissKey(announcement.id), '1');
+      localStorage.setItem(key, '1');
     } catch {
-      // Best effort write.
+      // best effort
     }
     setDismissedInSession(true);
   };
 
-  if (hidden || !announcement) {
-    return null;
-  }
+  const showContent = announcement && isClientReady && !dismissedInSession && !hidden;
 
   return (
-    <div className="border-b border-primary/35 bg-primary/20 text-foreground shadow-sm">
-      <div className="container mx-auto flex items-start justify-between gap-3 px-4 py-2">
-        <div className="text-sm">
-          <span className="font-semibold">{announcement.title}</span>{' '}
-          <span>{announcement.message}</span>
-          {announcement.ctaHref && announcement.ctaLabel && (
-            <>
-              {' '}
-              <Link
-                href={announcement.ctaHref}
-                className="font-semibold text-foreground underline decoration-primary underline-offset-2 hover:opacity-80"
-              >
-                {announcement.ctaLabel}
-              </Link>
-            </>
-          )}
-        </div>
+    <div
+      role="banner"
+      className="fixed top-0 left-0 right-0 z-[100] border-b border-primary/35 bg-primary/20 text-foreground shadow-sm"
+      onClickCapture={(e) => {
+        const el = (e.target as HTMLElement).closest?.('[data-dismiss-banner]');
+        if (el) {
+          e.preventDefault();
+          e.stopPropagation();
+          dismiss();
+        }
+      }}
+    >
+      {showContent ? (
+        <div className="container mx-auto flex items-start justify-between gap-3 px-4 py-2">
+          <div className="min-w-0 flex-1 text-sm">
+            <span className="font-semibold">{announcement.title}</span>{' '}
+            <span>{announcement.message}</span>
+            {announcement.ctaHref && announcement.ctaLabel && (
+              <>
+                {' '}
+                <Link
+                  href={announcement.ctaHref}
+                  className="font-semibold text-foreground underline decoration-primary underline-offset-2 hover:opacity-80"
+                >
+                  {announcement.ctaLabel}
+                </Link>
+              </>
+            )}
+          </div>
 
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          onClick={dismiss}
-          aria-label="Dismiss announcement"
-          className="h-7 w-7 shrink-0 text-current hover:bg-primary/20"
-        >
-          <X className="h-4 w-4" />
-        </Button>
-      </div>
+          <button
+            type="button"
+            data-dismiss-banner
+            aria-label="Dismiss announcement"
+            className="relative z-10 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-current hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <X className="h-4 w-4 pointer-events-none" />
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -37,8 +37,10 @@ export default function RootLayout({
           <AuthProvider>
             <JobPollingProvider />
             <SiteAnnouncementBanner />
-            <Navbar />
-            {children}
+            <div className="pt-14">
+              <Navbar />
+              {children}
+            </div>
             <Toaster />
           </AuthProvider>
         </ThemeProvider>
