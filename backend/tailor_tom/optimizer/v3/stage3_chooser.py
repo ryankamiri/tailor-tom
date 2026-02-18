@@ -9,7 +9,7 @@ import dspy
 from pydantic import BaseModel, Field
 
 from tailor_tom.latex_compiler import compile_latex
-from tailor_tom.layout_analyzer import check_quality
+from tailor_tom.layout_analyzer import check_quality, extract_items_from_latex
 
 from tailor_tom.optimizer.v3.stage0_preprocess import BulletConstraint, _strip_latex_commands, replace_nth
 from tailor_tom.optimizer.v3.llm_usage import TokenUsage, usage_from_counts
@@ -91,6 +91,41 @@ def _format_resume_context_for_chooser(bullets: list[BulletConstraint]) -> str:
     for b in bullets:
         lines.append(f"- B{b.bullet_id} [{b.section}]: {b.original_text}")
     return "\n".join(lines)
+
+
+def _normalize_snippet(s: str) -> str:
+    """Normalize for ownership comparison (whitespace, strip commands)."""
+    return " ".join(_strip_latex_commands(s or "").split())
+
+
+def _verify_ownership_after_apply(
+    final_latex: str,
+    bullets: list[BulletConstraint],
+    choices: dict[int, str],
+    option_id_to_latex: dict[str, str],
+) -> tuple[bool, str]:
+    """Verify each changed bullet's replacement landed in its owned source item.
+    Returns (passed, error_message). On failure, error_message describes the mismatch.
+    """
+    items = extract_items_from_latex(final_latex)
+    bullet_by_id = {b.bullet_id: b for b in bullets}
+    for bid, option_id in choices.items():
+        bullet = bullet_by_id.get(bid)
+        if not bullet:
+            continue
+        chosen_latex = option_id_to_latex.get(option_id, "")
+        orig_latex = bullet.latex_snippet or ""
+        if _normalize_snippet(chosen_latex) == _normalize_snippet(orig_latex):
+            continue
+        src_idx = getattr(bullet, "source_item_index", bid - 1)
+        if src_idx < 0:
+            src_idx = bid - 1
+        if src_idx >= len(items):
+            return False, f"ownership check: source_item_index {src_idx} out of range (items={len(items)})"
+        item_latex = items[src_idx].get("latex", "")
+        if _normalize_snippet(item_latex) != _normalize_snippet(chosen_latex):
+            return False, f"ownership check: item at source_item_index {src_idx} does not match chosen replacement for bullet {bid}"
+    return True, ""
 
 
 def _apply_choices_to_latex(
@@ -232,6 +267,10 @@ def apply_and_verify(
     )
     if not all_applied:
         return False, "Failed to apply some chooser selections", None, 0, False, ""
+
+    ownership_ok, ownership_err = _verify_ownership_after_apply(final_latex, bullets, choices, option_id_to_latex)
+    if not ownership_ok:
+        return False, f"Ownership verification failed: {ownership_err}", None, 0, False, ""
 
     compile_result = compile_latex(final_latex)
     if not compile_result.success:

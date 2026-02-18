@@ -14,6 +14,7 @@ from tailor_tom.optimizer.v3.stage2_validation import (
     REASON_APPLY_NO_EFFECT,
     REASON_COMPILE_FAILED,
     REASON_LINE_COUNT_MISMATCH,
+    REASON_LINE_MAPPING_MISSING,
     REASON_SNIPPET_NOT_FOUND,
     REASON_ANCHORED_SNIPPET_NOT_FOUND,
     REASON_TOO_LONG_WORDS,
@@ -39,6 +40,7 @@ def _repair_hint_for_reason(reason_code: str) -> str:
         REASON_INVALID_PAYLOAD: "Return valid bullet_id and LaTeX.",
         REASON_COMPILE_FAILED: "Ensure valid LaTeX and no broken commands.",
         REASON_LINE_COUNT_MISMATCH: "Preserve line count so bullet fits layout.",
+        REASON_LINE_MAPPING_MISSING: "Post-compile bullet at source item index missing; layout may have shifted.",
     }
     return hints.get(reason_code, "Address validation failure.")
 
@@ -64,6 +66,18 @@ def optimize_resume_v3(
             diagnostics={"stage": "stage0", "error": s0.error_message},
         )
     if s0.no_eligible:
+        diag: dict = {"stage": "stage0", "no_eligible": True, "k": 0}
+        if getattr(s0, "stage0_diagnostics", None):
+            diag.update(s0.stage0_diagnostics)
+            diag["dropped_for_mapping_count"] = (
+                diag.get("stage0_dropped_unmatched_count", 0)
+                + diag.get("stage0_dropped_low_confidence_count", 0)
+            )
+            diag["dropped_for_mapping_sample"] = (
+                (diag.get("stage0_dropped_unmatched_sample") or [])[:10]
+                + (diag.get("stage0_dropped_low_confidence_sample") or [])[:10]
+            )[:20]
+        diag["mapping_integrity_passed"] = True
         return V3OptimizationResult(
             success=True,
             optimized_latex=resume_latex,
@@ -72,7 +86,7 @@ def optimize_resume_v3(
             passes_done=0,
             quality_passes=True,
             token_usage=usage_from_counts(0, 0, 0.0, "estimated"),
-            diagnostics={"stage": "stage0", "no_eligible": True, "k": 0},
+            diagnostics=diag,
         )
 
     bullets = s0.eligible_bullets
@@ -99,6 +113,16 @@ def optimize_resume_v3(
         "early_stop": False,
         "max_iterations_used": 0,
     }
+    if getattr(s0, "stage0_diagnostics", None):
+        diagnostics.update(s0.stage0_diagnostics)
+        diagnostics["dropped_for_mapping_count"] = (
+            diagnostics.get("stage0_dropped_unmatched_count", 0)
+            + diagnostics.get("stage0_dropped_low_confidence_count", 0)
+        )
+        diagnostics["dropped_for_mapping_sample"] = (
+            list(diagnostics.get("stage0_dropped_unmatched_sample") or [])[:10]
+            + list(diagnostics.get("stage0_dropped_low_confidence_sample") or [])[:10]
+        )[:20]
 
     all_candidates: list[GeneratedCandidate] = []
     pass1_hist_merged: dict[str, int] = {}
@@ -243,6 +267,7 @@ def optimize_resume_v3(
     )
 
     if not success:
+        diagnostics["mapping_integrity_passed"] = False
         return V3OptimizationResult(
             success=False,
             error_message=err,
@@ -264,6 +289,7 @@ def optimize_resume_v3(
     diagnostics["changed_bullet_count"] = changed_bullet_count
     diagnostics["original_kept_count"] = len(choices) - changed_bullet_count
     diagnostics["j"] = len(all_candidates)
+    diagnostics["mapping_integrity_passed"] = True
     # Drop large refs so they can be GC'd before return
     all_candidates.clear()
 

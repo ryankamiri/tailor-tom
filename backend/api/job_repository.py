@@ -406,6 +406,9 @@ def get_admin_v3_health(db: Session, job_limit: int = 500) -> dict[str, Any]:
     usage_source_actual = 0
     usage_source_mixed = 0
     usage_source_estimated = 0
+    mapping_integrity_fail_count = 0
+    total_dropped_for_mapping = 0
+    total_matched_for_mapping_rate = 0  # denominator: stage0_matched_items or k
 
     for job in jobs:
         if job.status == "completed":
@@ -426,6 +429,11 @@ def get_admin_v3_health(db: Session, job_limit: int = 500) -> dict[str, Any]:
         chosen = d.get("chooser_selected")
         if isinstance(chosen, dict):
             chooser_changed_count += len(chosen)
+        if d.get("mapping_integrity_passed") is False:
+            mapping_integrity_fail_count += 1
+        total_dropped_for_mapping += int(d.get("dropped_for_mapping_count") or 0)
+        denom = d.get("stage0_matched_items") or d.get("k") or 0
+        total_matched_for_mapping_rate += int(denom)
         tu = raw.get("token_usage") or {}
         if isinstance(tu, dict):
             total_prompt += int(tu.get("prompt_tokens") or 0)
@@ -478,6 +486,10 @@ def get_admin_v3_health(db: Session, job_limit: int = 500) -> dict[str, Any]:
         "pass1_neutral_reasons": pass1_neutral,
         "apply_no_effect_count": apply_no_effect_count,
         "apply_no_effect_rate": round(apply_no_effect_rate, 4),
+        "mapping_drop_rate": round(
+            total_dropped_for_mapping / total_matched_for_mapping_rate, 4
+        ) if total_matched_for_mapping_rate else 0.0,
+        "mapping_integrity_fail_count": mapping_integrity_fail_count,
     }
 
 

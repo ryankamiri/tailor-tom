@@ -848,7 +848,7 @@ def extract_line_metrics(pdf_bytes: bytes, latex: Optional[str] = None) -> Dict:
             # Use LaTeX-based detection: extract items from LaTeX and match to PDF
             items = extract_items_from_latex(latex)
             
-            for item in items:
+            for item_index, item in enumerate(items):
                 item_text = item["text"]
                 if not item_text:
                     continue
@@ -1246,18 +1246,20 @@ def extract_line_metrics(pdf_bytes: bytes, latex: Optional[str] = None) -> Dict:
                 # Final values stored for utilization calculation
                 
                 bullets.append({
-                    "text_preview": item_text,  # Store full text
-                    "lines_text": lines_text,  # Store text split by lines (for showing line breaks)
-                    "latex_source": item.get("latex", ""),  # Store LaTeX source for reference
+                    "text_preview": item_text,
+                    "lines_text": lines_text,
+                    "latex_source": item.get("latex", ""),
                     "line_count": line_count,
                     "y_start": y_start,
                     "y_end": y_end,
                     "x_start": x_start,
-                    "last_line_x_start": last_line_x_start,  # Left edge of last line
-                    "last_line_x_end": last_line_x_end,      # Right edge of last line
+                    "last_line_x_start": last_line_x_start,
+                    "last_line_x_end": last_line_x_end,
+                    "item_index": item_index,
+                    "item_id": item_index + 1,
+                    "match_similarity": similarity,
                 })
             
-            # Don't close here - let finally block handle it
             return {"bullets": bullets}
         
         # Fallback to PDF-only detection (original implementation)

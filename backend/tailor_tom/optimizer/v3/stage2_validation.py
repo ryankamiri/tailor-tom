@@ -27,6 +27,7 @@ REASON_APPLY_NO_EFFECT = "apply_no_effect"
 REASON_INVALID_PAYLOAD = "invalid_payload"
 REASON_COMPILE_FAILED = "compile_failed"
 REASON_LINE_COUNT_MISMATCH = "line_count_mismatch"
+REASON_LINE_MAPPING_MISSING = "line_mapping_missing"
 
 
 def _validate_pass1(
@@ -83,18 +84,34 @@ def _verify_line_counts(
     bullets: list[BulletConstraint],
     pdf_bytes: bytes,
     latex: str,
-) -> dict[int, tuple[int, int]]:
-    """Return dict bullet_id -> (original_line_count, new_line_count) for bullets that changed."""
+) -> tuple[dict[int, tuple[int, int]], dict[int, str]]:
+    """Verify by source_item_index (not position). Returns (line_count_failures, reason_by_bullet_id).
+    line_count_failures: bullet_id -> (original_line_count, new_line_count).
+    reason_by_bullet_id: bullet_id -> REASON_LINE_MAPPING_MISSING when post-compile item is missing.
+    """
     metrics = extract_line_metrics(pdf_bytes, latex=latex)
-    new_bullets = metrics.get("bullets", [])
+    new_bullets_list = metrics.get("bullets", [])
+    # Map by item_index from extraction (stable ownership key)
+    new_by_item_index: dict[int, dict] = {}
+    for nb in new_bullets_list:
+        idx = nb.get("item_index")
+        if idx is not None:
+            new_by_item_index[idx] = nb
     failures: dict[int, tuple[int, int]] = {}
+    reason_by_bullet_id: dict[int, str] = {}
     for b in bullets:
-        idx = b.bullet_id - 1
-        if idx < len(new_bullets):
-            new_lines = new_bullets[idx].get("line_count", 0)
-            if new_lines != b.line_count:
-                failures[b.bullet_id] = (b.line_count, new_lines)
-    return failures
+        src_idx = getattr(b, "source_item_index", b.bullet_id - 1)
+        if src_idx < 0:
+            # Fallback for legacy constraints without source_item_index
+            src_idx = b.bullet_id - 1
+        new_bullet = new_by_item_index.get(src_idx)
+        if new_bullet is None:
+            reason_by_bullet_id[b.bullet_id] = REASON_LINE_MAPPING_MISSING
+            continue
+        new_lines = new_bullet.get("line_count", 0)
+        if new_lines != b.line_count:
+            failures[b.bullet_id] = (b.line_count, new_lines)
+    return failures, reason_by_bullet_id
 
 
 def _slot_from_option_id(option_id: str) -> Optional[int]:
@@ -221,17 +238,21 @@ def run_feasibility(
                 pass2_fail[oid] = REASON_COMPILE_FAILED
             continue
         bullets_changed = list(bullet_candidate.keys())
-        line_failures = _verify_line_counts(
+        line_failures, mapping_missing = _verify_line_counts(
             [bullet_by_id[bid] for bid in bullets_changed],
             compile_result.pdf_bytes or b"",
             test_latex,
         )
+        for bid in mapping_missing:
+            c = bullet_candidate.get(bid)
+            if c:
+                pass2_fail[c.option_id] = mapping_missing[bid]
         for bid in line_failures:
             c = bullet_candidate.get(bid)
             if c:
                 pass2_fail[c.option_id] = REASON_LINE_COUNT_MISMATCH
 
-    pass2_hist = {REASON_COMPILE_FAILED: 0, REASON_LINE_COUNT_MISMATCH: 0}
+    pass2_hist = {REASON_COMPILE_FAILED: 0, REASON_LINE_COUNT_MISMATCH: 0, REASON_LINE_MAPPING_MISSING: 0}
     for r in pass2_fail.values():
         pass2_hist[r] = pass2_hist.get(r, 0) + 1
 

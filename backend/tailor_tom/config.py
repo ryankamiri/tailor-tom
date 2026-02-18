@@ -178,6 +178,12 @@ class Settings(BaseSettings):
         le=1.0,
         description="Max character shrink fraction per bullet (V3 pass-1 shrink limit).",
     )
+    optimizer_mapping_min_similarity: float = Field(
+        default=0.74,
+        ge=0.0,
+        le=1.0,
+        description="V3 mapping: minimum normalized similarity (original_text vs latex_source) to keep a bullet. Below = drop and continue.",
+    )
 
     # Optimizer V2 debug observability (all DEBUG lines prefixed with 'DEBUG ')
     optimizer_debug_enabled: bool = Field(
