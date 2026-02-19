@@ -6,7 +6,6 @@ This module keeps legacy helper signatures used by worker/optimizer/auth.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -15,13 +14,15 @@ from uuid import UUID
 import redis
 
 from api.cache import (
+    get_job_envelope_cache,
     get_redis_client as _cache_redis_client,
     on_job_write_invalidate,
-    set_job_cache,
+    set_job_envelope_cache,
 )
 from api.database import SessionLocal
 from api.db_models import Job
 from api.job_repository import (
+    build_job_envelope,
     create_job as repo_create_job,
     get_global_stats,
     get_job_by_id,
@@ -129,21 +130,24 @@ def get_job_status_only(job_id: str) -> Optional[str]:
 
 
 def get_job(job_id: str) -> Optional[dict[str, Any]]:
-    cached = _cache_redis_client().get(f"cache:job:{job_id}")
-    if cached:
-        try:
-            return json.loads(cached)
-        except Exception:
-            pass
+    """Return canonical job envelope from cache or DB. Worker and API use same envelope (cache:job:{job_id})."""
+    envelope = get_job_envelope_cache(job_id)
+    if envelope is not None:
+        logger.debug(
+            "job_cache_hit job_id=%s caller=worker_get_job cache_schema_version=%s",
+            job_id,
+            envelope.get("cache_schema_version"),
+        )
+        return envelope
 
     db = SessionLocal()
     try:
         job = get_job_by_id(db, job_id)
         if not job:
             return None
-        payload = _job_to_legacy_dict(job)
-        set_job_cache(job_id, payload)
-        return payload
+        envelope = build_job_envelope(job)
+        set_job_envelope_cache(job_id, envelope)
+        return envelope
     finally:
         db.close()
 

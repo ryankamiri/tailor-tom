@@ -94,13 +94,35 @@ export function AdminUserDetailDrawer({
                     {summary.recent_jobs.map((j) => (
                       <li
                         key={j.job_id}
-                        className="flex justify-between items-center py-1 border-b border-border/50"
+                        className="flex justify-between items-center py-1 border-b border-border/50 gap-2"
                       >
                         <span className="truncate">{j.company_name || j.job_id}</span>
-                        <span className="text-muted-foreground shrink-0 ml-2">{j.status}</span>
+                        <span className="text-muted-foreground shrink-0">{j.status}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="shrink-0"
+                          onClick={() => {
+                            onClose();
+                            router.push(`/admin/users/${summary.user_id}/jobs/${j.job_id}`);
+                          }}
+                        >
+                          Open Job
+                        </Button>
                       </li>
                     ))}
                   </ul>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-2"
+                    onClick={() => {
+                      onClose();
+                      router.push(`/admin/users/${summary.user_id}/jobs`);
+                    }}
+                  >
+                    View All Jobs
+                  </Button>
                 </section>
               )}
               {summary.has_resume && (

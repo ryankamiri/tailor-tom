@@ -15,7 +15,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from celery.signals import task_failure, worker_ready
 
 from worker.celery_app import celery_app
-from worker.discord_webhook import notify_task_failure
+from worker.discord_webhook import notify_task_failure, notify_terminal_failure_once
 from api.conversion_storage import (
     CONVERSION_KEY_PREFIX,
     CONVERSION_TTL,
@@ -483,6 +483,21 @@ def optimize_resume_task(self, job_id: str):
             _sync_user_job_counts(job_id, "failed")
             logger.error(f"[optimize_resume_task] Job {job_id} failed: {result.error_message}")
             _terminal_status = "failed"
+            try:
+                rc = get_convert_redis()
+                notify_terminal_failure_once(
+                    rc,
+                    "optimize_job",
+                    job_id,
+                    "worker.tasks.optimize_resume_task",
+                    result.error_message or "Optimization failed",
+                    queue=settings.celery_queue_name,
+                    company_name=company_name,
+                    passes_done=result.passes_done,
+                    status_source="controlled_failure",
+                )
+            except Exception as e:
+                logger.warning("[optimize_resume_task] Discord failure alert error: %s", e)
 
     except (TimeLimitExceeded, SoftTimeLimitExceeded) as e:
         # Handle timeout exceptions - mark job as failed (unless user already cancelled)
@@ -522,6 +537,20 @@ def optimize_resume_task(self, job_id: str):
         )
         _sync_user_job_counts(job_id, "failed")
         _terminal_status = "failed"
+        try:
+            rc = get_convert_redis()
+            notify_terminal_failure_once(
+                rc,
+                "optimize_job",
+                job_id,
+                "worker.tasks.optimize_resume_task",
+                error_message,
+                queue=settings.celery_queue_name,
+                company_name=job.get("company_name") if job else None,
+                status_source="timeout",
+            )
+        except Exception as alert_err:
+            logger.warning("[optimize_resume_task] Discord failure alert error: %s", alert_err)
         # Don't re-raise - timeout is a final failure, not retryable
 
     except Exception as e:
@@ -539,6 +568,20 @@ def optimize_resume_task(self, job_id: str):
         )
         _sync_user_job_counts(job_id, "failed")
         _terminal_status = "failed"
+        try:
+            rc = get_convert_redis()
+            notify_terminal_failure_once(
+                rc,
+                "optimize_job",
+                job_id,
+                "worker.tasks.optimize_resume_task",
+                str(e),
+                queue=settings.celery_queue_name,
+                company_name=job.get("company_name") if job else None,
+                status_source="exception",
+            )
+        except Exception as alert_err:
+            logger.warning("[optimize_resume_task] Discord failure alert error: %s", alert_err)
         raise
     finally:
         if debug_enabled() and _task_start > 0:
@@ -627,6 +670,17 @@ def convert_docx_task(self, conversion_id: str):
             rc.setex(key, CONVERSION_TTL, json.dumps(error_result))
         except Exception:
             pass
+        try:
+            notify_terminal_failure_once(
+                rc,
+                "docx_conversion",
+                conversion_id,
+                "worker.tasks.convert_docx_task",
+                str(exc),
+                status_source="exception",
+            )
+        except Exception as alert_err:
+            logger.warning("[convert_docx_task] Discord failure alert error: %s", alert_err)
     finally:
         data = None
         latex = None

@@ -19,6 +19,10 @@ JOB_LIST_CACHE_TTL_SECONDS = 90
 USER_PROFILE_CACHE_TTL_SECONDS = 10 * 60
 ADMIN_USER_COSTS_CACHE_TTL_SECONDS = 900  # 15 min
 
+# Canonical job envelope: all readers (user detail, admin detail, worker) use this shape.
+CACHE_SCHEMA_VERSION = 1
+JOB_ENVELOPE_KEY_PREFIX = "cache:job:"
+
 
 def get_redis_client() -> redis.Redis:
     global _redis_client
@@ -46,16 +50,31 @@ def _safe_json_dumps(value: Any) -> str:
     return json.dumps(value)
 
 
-def get_job_cache(job_id: str) -> dict[str, Any] | None:
-    key = f"cache:job:{job_id}"
-    raw = get_redis_client().get(key)
-    data = _safe_json_loads(raw)
-    return data if isinstance(data, dict) else None
+def get_job_envelope_cache(job_id: str) -> dict[str, Any] | None:
+    """Return canonical job envelope or None (miss, invalid schema, or Redis error). Fail-open."""
+    try:
+        key = f"{JOB_ENVELOPE_KEY_PREFIX}{job_id}"
+        raw = get_redis_client().get(key)
+        data = _safe_json_loads(raw)
+        if not isinstance(data, dict):
+            return None
+        if data.get("cache_schema_version") != CACHE_SCHEMA_VERSION:
+            return None
+        if data.get("job_id") is None or data.get("owner_user_id") is None:
+            return None
+        return data
+    except Exception as e:
+        logger.warning("Job envelope cache get failed for job_id=%s: %s", job_id, e)
+        return None
 
 
-def set_job_cache(job_id: str, payload: dict[str, Any]) -> None:
-    key = f"cache:job:{job_id}"
-    get_redis_client().setex(key, JOB_CACHE_TTL_SECONDS, _safe_json_dumps(payload))
+def set_job_envelope_cache(job_id: str, payload: dict[str, Any]) -> None:
+    """Write canonical job envelope. Fail-open on Redis error (log only)."""
+    try:
+        key = f"{JOB_ENVELOPE_KEY_PREFIX}{job_id}"
+        get_redis_client().setex(key, JOB_CACHE_TTL_SECONDS, _safe_json_dumps(payload))
+    except Exception as e:
+        logger.warning("Job envelope cache set failed for job_id=%s: %s", job_id, e)
 
 
 def get_jobs_list_cache(user_id: str, status: str, limit: int, cursor: str | None) -> dict[str, Any] | None:
@@ -91,7 +110,11 @@ def set_user_profile_cache(user_id: str, payload: dict[str, Any]) -> None:
 
 
 def invalidate_job_cache(job_id: str) -> None:
-    get_redis_client().delete(f"cache:job:{job_id}")
+    """Single key for job detail; used by on_job_write_invalidate."""
+    try:
+        get_redis_client().delete(f"{JOB_ENVELOPE_KEY_PREFIX}{job_id}")
+    except Exception as e:
+        logger.warning("Job cache invalidate failed for job_id=%s: %s", job_id, e)
 
 
 def invalidate_user_profile_cache(user_id: str) -> None:

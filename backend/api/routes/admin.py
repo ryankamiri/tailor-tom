@@ -20,7 +20,17 @@ from api.cache import (
 from api.database import get_db
 from api.db_models import User
 from api.deps import CurrentUserIdentity, require_admin
-from api.job_repository import get_admin_user_costs, get_admin_user_summary, get_admin_users, get_admin_v3_health
+from api.job_repository import (
+    get_admin_user_costs,
+    get_admin_user_summary,
+    get_admin_users,
+    get_admin_v3_health,
+    list_jobs_for_admin_user_cursor,
+    get_job_for_admin_user,
+    fetch_job_envelope_cached,
+    serialize_job_for_list,
+    InvalidCursorError,
+)
 from api.storage import get_job_stats
 from api.validation import validate_admin_utc_month
 
@@ -211,6 +221,120 @@ async def list_resumes(
         },
     }
 
+
+# ---------------------------------------------------------------------------
+# Admin: view user's jobs (read-only, no impersonation)
+# ---------------------------------------------------------------------------
+
+def _parse_user_id(user_id: str) -> UUID:
+    """Parse user_id to UUID; raise HTTPException 422 on invalid format."""
+    try:
+        return UUID(user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail="Invalid user_id") from e
+
+
+@router.get("/admin/users/{user_id}/jobs")
+async def list_admin_user_jobs(
+    user_id: str,
+    identity: CurrentUserIdentity = Depends(require_admin),
+    db: Session = Depends(get_db),
+    limit: int = Query(default=20, ge=1, le=100),
+    cursor: str | None = Query(default=None),
+    status: list[str] | None = Query(default=None),
+    search: str | None = Query(default=None),
+):
+    """List jobs for a user (admin read-only). Cursor pagination; optional status filter and search (job_id, company_name)."""
+    uid = _parse_user_id(user_id)
+    if db.query(User).filter(User.id == uid).first() is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        status_filter = list(status) if status else None
+        jobs, next_cursor = list_jobs_for_admin_user_cursor(
+            db,
+            user_id=uid,
+            limit=limit,
+            cursor=cursor,
+            status=status_filter,
+            search=search,
+        )
+    except InvalidCursorError:
+        raise HTTPException(status_code=400, detail="Invalid cursor")
+    return {
+        "items": [serialize_job_for_list(j) for j in jobs],
+        "next_cursor": next_cursor,
+        "user_id": user_id,
+    }
+
+
+@router.get("/admin/users/{user_id}/jobs/{job_id}", response_model=None)
+async def get_admin_user_job_detail(
+    user_id: str,
+    job_id: str,
+    identity: CurrentUserIdentity = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Get full job detail for admin view (same shape as user job detail plus owner_user_id). Uses shared job cache."""
+    uid = _parse_user_id(user_id)
+    envelope = fetch_job_envelope_cached(db, job_id, caller="admin_detail")
+    if not envelope:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if envelope.get("owner_user_id") != str(uid):
+        raise HTTPException(status_code=404, detail="Job not found")
+    payload = {
+        "job_id": envelope["job_id"],
+        "status": envelope["status"],
+        "created_at": envelope["created_at"],
+        "completed_at": envelope.get("completed_at"),
+        "error_message": envelope.get("error_message"),
+        "company_name": envelope.get("company_name"),
+        "result": envelope.get("result"),
+        "original_latex": envelope.get("original_latex"),
+        "optimizer_version": envelope.get("optimizer_version"),
+        "llm_prompt_tokens": envelope.get("llm_prompt_tokens"),
+        "llm_completion_tokens": envelope.get("llm_completion_tokens"),
+        "llm_estimated_cost_usd": envelope.get("llm_estimated_cost_usd"),
+        "llm_usage_source": envelope.get("llm_usage_source"),
+        "owner_user_id": envelope["owner_user_id"],
+    }
+    if isinstance(envelope.get("analysis_json"), dict):
+        payload["analysis"] = envelope["analysis_json"]
+    return payload
+
+
+@router.get("/admin/users/{user_id}/jobs/{job_id}/latex")
+async def get_admin_user_job_latex(
+    user_id: str,
+    job_id: str,
+    identity: CurrentUserIdentity = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Get optimized LaTeX for a user's job (admin read-only). Same terminal-state behavior as user endpoint. Uses shared job cache."""
+    uid = _parse_user_id(user_id)
+    envelope = fetch_job_envelope_cached(db, job_id, caller="admin_detail")
+    if not envelope:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if envelope.get("owner_user_id") != str(uid):
+        raise HTTPException(status_code=404, detail="Job not found")
+    if envelope.get("status") not in ("completed", "failed", "cancelled"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is not in a terminal state (status: {envelope.get('status')})",
+        )
+    result = envelope.get("result")
+    optimized_latex = result.get("optimized_latex") if isinstance(result, dict) else None
+    if not optimized_latex:
+        raise HTTPException(status_code=404, detail="Optimized LaTeX not available for this job")
+    return {
+        "job_id": job_id,
+        "latex": optimized_latex,
+        "filename": (result.get("filename") if isinstance(result, dict) else None) or "resume.pdf",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Resumes
+# ---------------------------------------------------------------------------
 
 @router.get("/admin/resumes/{user_id}")
 async def get_resume_detail(

@@ -103,6 +103,16 @@ export interface JobListItem {
   error_message: string | null;
 }
 
+/** Admin: one item in GET /api/admin/users/:userId/jobs list. */
+export type AdminUserJobListItem = JobListItem;
+
+/** Admin: GET /api/admin/users/:userId/jobs response. */
+export interface AdminUserJobsListResponse {
+  items: AdminUserJobListItem[];
+  next_cursor: string | null;
+  user_id: string;
+}
+
 export interface DiffItemChange {
   type: 'removed' | 'added' | 'unchanged';
   text: string;
@@ -330,6 +340,65 @@ export async function deleteJob(jobId: string): Promise<void> {
     const error = await res.json().catch(() => ({ detail: 'Failed to delete job' }));
     throw new Error(error.detail || 'Failed to delete job');
   }
+}
+
+// ---------------------------------------------------------------------------
+// Admin: view user's jobs (read-only)
+// ---------------------------------------------------------------------------
+
+export interface ListAdminUserJobsParams {
+  limit?: number;
+  cursor?: string | null;
+  status?: string[] | null;
+  search?: string | null;
+}
+
+/**
+ * List jobs for a user (admin only). Cursor pagination; optional status and search.
+ */
+export async function listAdminUserJobs(
+  userId: string,
+  params: ListAdminUserJobsParams = {}
+): Promise<AdminUserJobsListResponse> {
+  const searchParams = new URLSearchParams();
+  if (params.limit != null) searchParams.set('limit', String(params.limit));
+  if (params.cursor) searchParams.set('cursor', params.cursor);
+  if (params.status?.length) params.status.forEach((s) => searchParams.append('status', s));
+  if (params.search) searchParams.set('search', params.search);
+  const qs = searchParams.toString();
+  const url = `${API_BASE}/api/admin/users/${encodeURIComponent(userId)}/jobs${qs ? `?${qs}` : ''}`;
+  const res = await authFetch(url);
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: 'Failed to list user jobs' }));
+    throw new Error(error.detail || 'Failed to list user jobs');
+  }
+  return res.json();
+}
+
+/**
+ * Get job detail for admin view (same shape as JobStatus plus owner_user_id).
+ */
+export async function getAdminUserJobStatus(userId: string, jobId: string): Promise<JobStatus & { owner_user_id?: string }> {
+  const res = await authFetch(`${API_BASE}/api/admin/users/${encodeURIComponent(userId)}/jobs/${encodeURIComponent(jobId)}`);
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: 'Job not found' }));
+    throw new Error(error.detail || 'Job not found');
+  }
+  return res.json();
+}
+
+/**
+ * Get optimized LaTeX for a user's job (admin only). Same terminal-state behavior as user endpoint.
+ */
+export async function getAdminUserJobLatex(userId: string, jobId: string): Promise<LatexResponse> {
+  const res = await authFetch(
+    `${API_BASE}/api/admin/users/${encodeURIComponent(userId)}/jobs/${encodeURIComponent(jobId)}/latex`
+  );
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: 'Failed to get LaTeX' }));
+    throw new Error(error.detail || 'Failed to get optimized LaTeX');
+  }
+  return res.json();
 }
 
 // ---------------------------------------------------------------------------

@@ -54,7 +54,7 @@ Deployment is **API + Worker + Redis + Postgres**, with optional **Caddy** for T
    - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `FRONTEND_URL` — for Sign in with Google
 3. Set `CELERY_QUEUE_NAME=hosted` (same for API and worker).
 
-See **env.vps.example** for optional vars (Discord webhook, worker concurrency, JWT expiry, etc.).
+See **env.vps.example** for optional vars (Discord webhook, worker concurrency, JWT expiry, etc.). With `DISCORD_WEBHOOK_URL` set, terminal failures (optimization and DOCX conversion) send one alert per job/conversion ID, deduped via Redis.
 
 **V3 mapping integrity:** The optimizer maps each bullet to a LaTeX item by similarity. You can set `OPTIMIZER_MAPPING_MIN_SIMILARITY` (default `0.74`, range 0–1). Bullets whose text does not match their LaTeX snippet above this threshold are dropped from optimization (not failed); the run continues with the rest. This prevents bullets from being applied to the wrong experience block. See **backend/.env.example** and **env.vps.example** for the optional variable.
 

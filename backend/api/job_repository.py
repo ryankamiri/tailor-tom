@@ -5,14 +5,18 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from sqlalchemy import case, Integer, tuple_, func, or_
 from sqlalchemy.orm import Session
 
+from api.cache import CACHE_SCHEMA_VERSION, get_job_envelope_cache, set_job_envelope_cache
 from api.db_models import Job, JobGlobalStats, User
+
+logger = logging.getLogger(__name__)
 
 JobStatus = Literal["pending", "processing", "completed", "failed", "cancelled"]
 
@@ -75,6 +79,55 @@ def serialize_job_for_detail(job: Job) -> dict[str, Any]:
     payload["llm_usage_source"] = job.llm_usage_source
     # analysis / analysis_parse_failed omitted: not shown to users; admin uses DB/aggregates
     return payload
+
+
+def build_job_envelope(job: Job) -> dict[str, Any]:
+    """Build canonical job envelope for cache (worker + API). Includes cache_schema_version and cached_at."""
+    detail = serialize_job_for_detail(job)
+    envelope = dict(detail)
+    envelope["job_id"] = job.id
+    envelope["owner_user_id"] = str(job.user_id)
+    envelope["user_id"] = str(job.user_id)
+    envelope["job_description"] = job.job_description
+    envelope["first_name"] = job.first_name
+    envelope["last_name"] = job.last_name
+    envelope["original_latex"] = job.original_latex or ""
+    envelope["target_pages"] = int(job.target_pages or 1)
+    envelope["max_iterations"] = int(job.max_iterations or 3)
+    envelope["restart_count"] = str(job.restart_count or 0)
+    envelope["last_restart_time"] = (
+        job.last_restart_time.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        if job.last_restart_time
+        else ""
+    )
+    envelope["analysis_json"] = job.analysis_json
+    envelope["cache_schema_version"] = CACHE_SCHEMA_VERSION
+    envelope["cached_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    if envelope.get("result") is None and job.optimized_latex:
+        envelope["result"] = {
+            "optimized_latex": job.optimized_latex,
+            "filename": job.result_filename or "resume.pdf",
+        }
+    return envelope
+
+
+def fetch_job_envelope_cached(
+    db: Session,
+    job_id: str,
+    caller: str = "unknown",
+) -> Optional[dict[str, Any]]:
+    """Cache-aside: return canonical job envelope from cache or DB. Fail-open to DB on Redis errors."""
+    cached = get_job_envelope_cache(job_id)
+    if cached is not None:
+        logger.debug("job_cache_hit job_id=%s caller=%s cache_schema_version=%s", job_id, caller, cached.get("cache_schema_version"))
+        return cached
+    job = get_job_by_id(db, job_id)
+    if not job:
+        return None
+    envelope = build_job_envelope(job)
+    set_job_envelope_cache(job_id, envelope)
+    logger.debug("job_cache_miss job_id=%s caller=%s cache_schema_version=%s", job_id, caller, envelope.get("cache_schema_version"))
+    return envelope
 
 
 def encode_cursor(created_at: datetime, job_id: str) -> str:
@@ -191,6 +244,57 @@ def list_jobs_for_user_cursor(
         rows = rows[:limit]
 
     return rows, next_cursor
+
+
+def list_jobs_for_admin_user_cursor(
+    db: Session,
+    *,
+    user_id: UUID,
+    limit: int,
+    cursor: str | None,
+    status: JobStatus | list[JobStatus] | None = None,
+    search: str | None = None,
+) -> tuple[list[Job], str | None]:
+    """Admin: list jobs for a user with optional status filter and search (job_id, company_name).
+    Same cursor model and ordering as list_jobs_for_user_cursor."""
+    query = db.query(Job).filter(Job.user_id == user_id)
+    if status is not None:
+        if isinstance(status, list):
+            if status:
+                query = query.filter(Job.status.in_(status))
+        else:
+            query = query.filter(Job.status == status)
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            or_(Job.id.ilike(term), (Job.company_name or "").ilike(term))
+        )
+    if cursor:
+        cursor_created_at, cursor_id = decode_cursor(cursor)
+        query = query.filter(
+            tuple_(Job.created_at, Job.id) < tuple_(cursor_created_at, cursor_id)
+        )
+    rows = (
+        query
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(limit + 1)
+        .all()
+    )
+    next_cursor = None
+    if len(rows) > limit:
+        last = rows[limit - 1]
+        next_cursor = encode_cursor(last.created_at, last.id)
+        rows = rows[:limit]
+    return rows, next_cursor
+
+
+def get_job_for_admin_user(db: Session, job_id: str, user_id: UUID) -> Job | None:
+    """Admin: strict user-scoped fetch for one job. Returns None if job missing or wrong user."""
+    return (
+        db.query(Job)
+        .filter(Job.id == job_id, Job.user_id == user_id)
+        .first()
+    )
 
 
 def list_processing_jobs_for_recovery(db: Session) -> list[Job]:

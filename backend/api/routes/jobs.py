@@ -11,17 +11,15 @@ from api.models import JobDetailAnalysis, JobStatusResponse
 from api.database import get_db
 from api.deps import CurrentUserIdentity, get_current_user_identity
 from api.cache import (
-    get_job_cache,
-    set_job_cache,
     get_jobs_list_cache,
     set_jobs_list_cache,
     on_job_write_invalidate,
 )
 from api.job_repository import (
     InvalidCursorError,
+    fetch_job_envelope_cached,
     get_job_for_user,
     list_jobs_for_user_cursor,
-    serialize_job_for_detail,
     serialize_job_for_list,
     update_job_status as repo_update_job_status,
 )
@@ -75,40 +73,45 @@ async def list_jobs(
     return payload
 
 
+def _envelope_to_status_response(envelope: dict) -> JobStatusResponse:
+    """Build JobStatusResponse from canonical envelope (exclude cache-internal and worker-only keys)."""
+    out = {
+        "job_id": envelope["job_id"],
+        "status": envelope["status"],
+        "created_at": envelope["created_at"],
+        "completed_at": envelope.get("completed_at"),
+        "error_message": envelope.get("error_message"),
+        "company_name": envelope.get("company_name"),
+        "result": envelope.get("result"),
+        "original_latex": envelope.get("original_latex"),
+        "optimizer_version": envelope.get("optimizer_version"),
+        "llm_prompt_tokens": envelope.get("llm_prompt_tokens"),
+        "llm_completion_tokens": envelope.get("llm_completion_tokens"),
+        "llm_estimated_cost_usd": envelope.get("llm_estimated_cost_usd"),
+        "llm_usage_source": envelope.get("llm_usage_source"),
+    }
+    analysis_raw = envelope.get("analysis_json")
+    if isinstance(analysis_raw, dict):
+        try:
+            out["analysis"] = JobDetailAnalysis(**analysis_raw)
+        except Exception:
+            out["analysis"] = None
+            out["analysis_parse_failed"] = True
+    return JobStatusResponse(**out)
+
+
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
 async def get_job_status(
     job_id: str,
     identity: CurrentUserIdentity = Depends(get_current_user_identity),
     db: Session = Depends(get_db),
 ):
-    user_id_str = str(identity.user_id)
-    cached = get_job_cache(job_id)
-    if cached and cached.get("user_id") == user_id_str:
-        out = {k: v for k, v in cached.items() if k != "user_id"}
-        if isinstance(out.get("analysis"), dict):
-            try:
-                out["analysis"] = JobDetailAnalysis(**out["analysis"])
-            except Exception:
-                out["analysis"] = None
-                out["analysis_parse_failed"] = True
-        return JobStatusResponse(**out)
-
-    job = get_job_for_user(db, job_id, identity.user_id)
-    if not job:
+    envelope = fetch_job_envelope_cached(db, job_id, caller="user_detail")
+    if not envelope:
         raise HTTPException(status_code=404, detail="Job not found")
-
-    payload = serialize_job_for_detail(job)
-    cache_payload = {**payload, "user_id": user_id_str}
-    set_job_cache(job_id, cache_payload)
-
-    out = dict(payload)
-    if out.get("analysis") is not None:
-        try:
-            out["analysis"] = JobDetailAnalysis(**out["analysis"])
-        except Exception:
-            out["analysis"] = None
-            out["analysis_parse_failed"] = True
-    return JobStatusResponse(**out)
+    if envelope.get("owner_user_id") != str(identity.user_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _envelope_to_status_response(envelope)
 
 
 @router.get("/jobs/{job_id}/latex")
@@ -117,23 +120,24 @@ async def get_job_latex(
     identity: CurrentUserIdentity = Depends(get_current_user_identity),
     db: Session = Depends(get_db),
 ):
-    job = get_job_for_user(db, job_id, identity.user_id)
-    if not job:
+    envelope = fetch_job_envelope_cached(db, job_id, caller="user_detail")
+    if not envelope:
         raise HTTPException(status_code=404, detail="Job not found")
-
-    if job.status not in ["completed", "failed", "cancelled"]:
+    if envelope.get("owner_user_id") != str(identity.user_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    if envelope.get("status") not in ("completed", "failed", "cancelled"):
         raise HTTPException(
             status_code=400,
-            detail=f"Job is not in a terminal state with result (status: {job.status})",
+            detail=f"Job is not in a terminal state with result (status: {envelope.get('status')})",
         )
-
-    if not job.optimized_latex:
+    result = envelope.get("result")
+    optimized_latex = result.get("optimized_latex") if isinstance(result, dict) else None
+    if not optimized_latex:
         raise HTTPException(status_code=404, detail="Optimized LaTeX not available for this job")
-
     return {
         "job_id": job_id,
-        "latex": job.optimized_latex,
-        "filename": job.result_filename or "resume.pdf",
+        "latex": optimized_latex,
+        "filename": (result.get("filename") if isinstance(result, dict) else None) or "resume.pdf",
     }
 
 

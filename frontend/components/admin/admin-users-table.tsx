@@ -123,6 +123,13 @@ export function AdminUsersTable({
                   </td>
                   <td className="px-2 py-2">
                     <div className="flex flex-wrap gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => router.push(`/admin/users/${row.user_id}/jobs`)}
+                      >
+                        View Jobs
+                      </Button>
                       {row.has_resume && (
                         <Button
                           variant="ghost"
