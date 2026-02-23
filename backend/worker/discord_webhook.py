@@ -8,6 +8,7 @@ import json
 import logging
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
 from typing import Any, Optional
 
 from tailor_tom.config import settings
@@ -36,6 +37,31 @@ def _truncate(s: str, max_len: int, suffix: str = "...") -> str:
     return s[: max_len - len(suffix)] + suffix
 
 
+def _webhook_target_for_logs(url: str) -> str:
+    """Redacted webhook target for logs (host + webhook id only)."""
+    try:
+        parsed = urlparse(url)
+        host = parsed.netloc or "unknown-host"
+        parts = [p for p in parsed.path.split("/") if p]
+        # Expected: /api/webhooks/{id}/{token}
+        webhook_id = parts[2] if len(parts) >= 4 and parts[0] == "api" and parts[1] == "webhooks" else "unknown-id"
+        return f"{host}/api/webhooks/{webhook_id}/<redacted>"
+    except Exception:
+        return "<invalid-webhook-url>"
+
+
+def _http_error_body_preview(err: urllib.error.HTTPError, max_len: int = 400) -> str:
+    """Best-effort error body extraction for webhook debugging."""
+    try:
+        raw = err.read()
+        if not raw:
+            return ""
+        body = raw.decode("utf-8", errors="replace")
+        return _truncate(" ".join(body.split()), max_len)
+    except Exception:
+        return ""
+
+
 def notify_terminal_failure_once(
     redis_client: Any,
     kind: str,
@@ -56,6 +82,7 @@ def notify_terminal_failure_once(
     url = (settings.discord_webhook_url or "").strip()
     if not url:
         return
+    webhook_target = _webhook_target_for_logs(url)
     if kind == "optimize_job":
         dedupe_key = f"{DISCORD_FAILED_ALERT_KEY_PREFIX}job:{entity_id}"
     elif kind == "docx_conversion":
@@ -110,11 +137,22 @@ def notify_terminal_failure_once(
         embed["fields"][3]["value"] = _truncate(error_message, new_err_len)
     payload = {"embeds": [embed]}
     body = json.dumps(payload).encode("utf-8")
+    logger.info(
+        "[discord_webhook] terminal_alert_attempt kind=%s entity_id=%s target=%s payload_bytes=%s",
+        kind,
+        entity_id,
+        webhook_target,
+        len(body),
+    )
     try:
         req = urllib.request.Request(
             url,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/plain, */*",
+                "User-Agent": "TailorTom-Worker-Webhook/1.0 (+https://tailortom.org)",
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -126,10 +164,14 @@ def notify_terminal_failure_once(
             entity_id,
         )
     except urllib.error.HTTPError as e:
+        body_preview = _http_error_body_preview(e)
         if e.code in (401, 403):
             logger.warning(
-                "[discord_webhook] Discord webhook returned %s (check URL/token); alert not sent.",
+                "[discord_webhook] Discord webhook returned %s (check URL/token); alert not sent. target=%s reason=%s body=%s",
                 e.code,
+                webhook_target,
+                getattr(e, "reason", ""),
+                body_preview or "<empty>",
             )
         else:
             logger.exception("[discord_webhook] Failed to send terminal failure notification")
@@ -163,6 +205,7 @@ def notify_task_failure(
     url = (settings.discord_webhook_url or "").strip()
     if not url:
         return
+    webhook_target = _webhook_target_for_logs(url)
 
     title = _truncate("Celery task failed", DISCORD_EMBED_TITLE_MAX)
     task_name_safe = _truncate(task_name, DISCORD_EMBED_FIELD_VALUE_MAX)
@@ -196,12 +239,23 @@ def notify_task_failure(
         "embeds": [embed],
     }
     body = json.dumps(payload).encode("utf-8")
+    logger.info(
+        "[discord_webhook] task_failure_alert_attempt task=%s task_id=%s target=%s payload_bytes=%s",
+        task_name_safe,
+        task_id_safe,
+        webhook_target,
+        len(body),
+    )
 
     try:
         req = urllib.request.Request(
             url,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/plain, */*",
+                "User-Agent": "TailorTom-Worker-Webhook/1.0 (+https://tailortom.org)",
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -211,10 +265,14 @@ def notify_task_failure(
                     resp.status,
                 )
     except urllib.error.HTTPError as e:
+        body_preview = _http_error_body_preview(e)
         if e.code in (401, 403):
             logger.warning(
-                "[discord_webhook] Discord webhook returned %s (check URL/token); task failure not reported there.",
+                "[discord_webhook] Discord webhook returned %s (check URL/token); task failure not reported there. target=%s reason=%s body=%s",
                 e.code,
+                webhook_target,
+                getattr(e, "reason", ""),
+                body_preview or "<empty>",
             )
         else:
             logger.exception("[discord_webhook] Failed to send task failure notification")

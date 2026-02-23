@@ -6,7 +6,7 @@ from typing import Optional
 
 from tailor_tom.config import settings
 from tailor_tom.latex_compiler import compile_latex
-from tailor_tom.layout_analyzer import extract_line_metrics
+from tailor_tom.layout_analyzer import extract_line_metrics, extract_items_from_latex
 
 from tailor_tom.optimizer.v3.stage0_preprocess import BulletConstraint, _strip_latex_commands, replace_nth
 from tailor_tom.optimizer.v3.stage1_generator import GeneratedCandidate
@@ -28,6 +28,7 @@ REASON_INVALID_PAYLOAD = "invalid_payload"
 REASON_COMPILE_FAILED = "compile_failed"
 REASON_LINE_COUNT_MISMATCH = "line_count_mismatch"
 REASON_LINE_MAPPING_MISSING = "line_mapping_missing"
+REASON_ANCHORED_OUTSIDE_OWNED_ITEM = "anchored_outside_owned_item"
 
 
 def _validate_pass1(
@@ -78,6 +79,60 @@ def _apply_replacement_to_latex(
     if not applied:
         return latex, False, False
     return new_latex, True, False
+
+
+def _normalize_snippet(s: str) -> str:
+    """Normalize snippet for ownership comparison."""
+    return " ".join(_strip_latex_commands(s or "").split())
+
+
+def _matching_item_indices(items: list[dict], target_norm: str) -> list[int]:
+    """Return indices of extracted items whose normalized latex equals target_norm."""
+    if not target_norm:
+        return []
+    out: list[int] = []
+    for i, item in enumerate(items):
+        item_norm = _normalize_snippet(item.get("latex", ""))
+        if item_norm == target_norm:
+            out.append(i)
+    return out
+
+
+def _is_owned_apply(
+    latex_after_apply: str,
+    bullet: BulletConstraint,
+    replacement_latex: str,
+) -> tuple[bool, dict]:
+    """Verify replacement landed at bullet.source_item_index in extracted item list."""
+    items = extract_items_from_latex(latex_after_apply)
+    src_idx = int(getattr(bullet, "source_item_index", bullet.bullet_id - 1))
+    if src_idx < 0:
+        src_idx = bullet.bullet_id - 1
+    chosen_norm = _normalize_snippet(replacement_latex or "")
+    orig_norm = _normalize_snippet(bullet.latex_snippet or "")
+    chosen_match_indices = _matching_item_indices(items, chosen_norm)
+    original_match_indices = _matching_item_indices(items, orig_norm)
+
+    if src_idx >= len(items):
+        return False, {
+            "reason": "source_index_out_of_range",
+            "source_item_index": src_idx,
+            "item_count": len(items),
+            "chosen_match_indices": chosen_match_indices,
+            "original_match_indices": original_match_indices,
+        }
+
+    owned_norm = _normalize_snippet(items[src_idx].get("latex", ""))
+    if owned_norm != chosen_norm:
+        return False, {
+            "reason": "source_item_mismatch",
+            "source_item_index": src_idx,
+            "item_count": len(items),
+            "chosen_match_indices": chosen_match_indices,
+            "original_match_indices": original_match_indices,
+            "owned_preview": " ".join((items[src_idx].get("text", "") or "").split())[:200],
+        }
+    return True, {}
 
 
 def _verify_line_counts(
@@ -172,12 +227,26 @@ def run_feasibility(
         if not ok:
             pass1_fail[c.option_id] = reason
             continue
-        _, applied, noop = _apply_replacement_to_latex(original_latex, bullet, c.replacement_latex)
+        applied_latex, applied, noop = _apply_replacement_to_latex(original_latex, bullet, c.replacement_latex)
         if noop:
             pass1_fail[c.option_id] = REASON_APPLY_NO_EFFECT
             continue
         if not applied:
             pass1_fail[c.option_id] = REASON_ANCHORED_SNIPPET_NOT_FOUND
+            continue
+        owned_ok, owned_meta = _is_owned_apply(applied_latex, bullet, c.replacement_latex)
+        if not owned_ok:
+            pass1_fail[c.option_id] = REASON_ANCHORED_OUTSIDE_OWNED_ITEM
+            if debug_enabled():
+                debug_log(
+                    logger,
+                    "stage2_pass1_ownership_fail",
+                    bullet_id=c.bullet_id,
+                    option_id=c.option_id,
+                    snippet_occurrence_index=int(getattr(bullet, "snippet_occurrence_index", 0)),
+                    source_item_index=int(getattr(bullet, "source_item_index", -1)),
+                    **owned_meta,
+                )
             continue
         pass1_ok.add(c.option_id)
 
@@ -223,12 +292,41 @@ def run_feasibility(
             continue
         test_latex = original_latex
         bullet_candidate: dict[int, GeneratedCandidate] = {}
+        # Occurrence-safe apply order for duplicate snippets:
+        # for same snippet text, apply higher occurrence index first.
+        apply_plan: list[tuple[str, int, int, GeneratedCandidate, BulletConstraint]] = []
         for c in slot_candidates:
             bullet = bullet_by_id.get(c.bullet_id)
             if not bullet:
                 continue
+            n = int(getattr(bullet, "snippet_occurrence_index", 0))
+            apply_plan.append((bullet.latex_snippet or "", -n, c.bullet_id, c, bullet))
+        apply_plan.sort(key=lambda row: (row[0], row[1], row[2]))
+        if debug_enabled():
+            debug_log(
+                logger,
+                "stage2_slot_apply_order",
+                slot=slot,
+                apply_count=len(apply_plan),
+                order=[{"bullet_id": bid, "option_id": c.option_id, "occurrence_index": -neg_n} for _, neg_n, bid, c, _ in apply_plan[:20]],
+            )
+        for _, _, _, c, bullet in apply_plan:
             test_latex, applied, _ = _apply_replacement_to_latex(test_latex, bullet, c.replacement_latex)
             if applied:
+                owned_ok, owned_meta = _is_owned_apply(test_latex, bullet, c.replacement_latex)
+                if not owned_ok:
+                    pass2_fail[c.option_id] = REASON_ANCHORED_OUTSIDE_OWNED_ITEM
+                    if debug_enabled():
+                        debug_log(
+                            logger,
+                            "stage2_pass2_ownership_fail",
+                            bullet_id=c.bullet_id,
+                            option_id=c.option_id,
+                            snippet_occurrence_index=int(getattr(bullet, "snippet_occurrence_index", 0)),
+                            source_item_index=int(getattr(bullet, "source_item_index", -1)),
+                            **owned_meta,
+                        )
+                    continue
                 bullet_candidate[c.bullet_id] = c
         if not bullet_candidate:
             continue
@@ -252,7 +350,12 @@ def run_feasibility(
             if c:
                 pass2_fail[c.option_id] = REASON_LINE_COUNT_MISMATCH
 
-    pass2_hist = {REASON_COMPILE_FAILED: 0, REASON_LINE_COUNT_MISMATCH: 0, REASON_LINE_MAPPING_MISSING: 0}
+    pass2_hist = {
+        REASON_COMPILE_FAILED: 0,
+        REASON_LINE_COUNT_MISMATCH: 0,
+        REASON_LINE_MAPPING_MISSING: 0,
+        REASON_ANCHORED_OUTSIDE_OWNED_ITEM: 0,
+    }
     for r in pass2_fail.values():
         pass2_hist[r] = pass2_hist.get(r, 0) + 1
 

@@ -108,6 +108,65 @@ def _normalized_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+def _find_all_occurrence_offsets(haystack: str, needle: str) -> list[int]:
+    """Return all 0-based character offsets of needle in haystack."""
+    if not needle:
+        return []
+    offsets: list[int] = []
+    start = 0
+    while True:
+        pos = haystack.find(needle, start)
+        if pos == -1:
+            break
+        offsets.append(pos)
+        start = pos + len(needle)
+    return offsets
+
+
+def _global_occurrence_index_for_constraint(
+    latex: str,
+    latex_items: list[dict[str, Any]],
+    constraint: BulletConstraint,
+) -> int:
+    """Compute snippet occurrence index against global LaTeX string occurrences.
+
+    Falls back to source-item occurrence among extracted items when global position
+    cannot be resolved.
+    """
+    snippet = constraint.latex_snippet or ""
+    if not snippet:
+        return 0
+
+    all_offsets = _find_all_occurrence_offsets(latex, snippet)
+    if not all_offsets:
+        return 0
+
+    src_idx = int(getattr(constraint, "source_item_index", -1))
+    source_pos = -1
+    if 0 <= src_idx < len(latex_items):
+        raw_pos = latex_items[src_idx].get("source_pos")
+        try:
+            if raw_pos is not None:
+                source_pos = int(raw_pos)
+        except (TypeError, ValueError):
+            source_pos = -1
+
+    if source_pos >= 0:
+        # Pick closest global occurrence to the owned source position.
+        best_i = min(range(len(all_offsets)), key=lambda i: abs(all_offsets[i] - source_pos))
+        return int(best_i)
+
+    # Fallback: count identical snippets up to owned source item index across all extracted items.
+    if src_idx >= 0:
+        count = 0
+        for i, item in enumerate(latex_items):
+            if (item.get("latex") or "") == snippet:
+                if i == src_idx:
+                    return count
+                count += 1
+    return 0
+
+
 def _extract_bullet_constraints(
     pdf_bytes: bytes,
     latex: str,
@@ -213,16 +272,11 @@ def _extract_bullet_constraints(
     stage0_dropped_unmatched_count = len(dropped_unmatched)
     stage0_dropped_low_confidence_count = len(dropped_low_confidence)
 
-    # Filter to mapped-only for section/short and snippet_occurrence_index
+    # Filter to mapped-only for section/short and compute global snippet_occurrence_index
     mapped_constraints = [c for c in constraints if c.mapping_status == MAPPING_STATUS_MAPPED]
     mapped_constraints.sort(key=lambda c: c.source_item_index)
-    snippet_next_index: dict[str, int] = {}
     for c in mapped_constraints:
-        s = c.latex_snippet
-        if s not in snippet_next_index:
-            snippet_next_index[s] = 0
-        c.snippet_occurrence_index = snippet_next_index[s]
-        snippet_next_index[s] += 1
+        c.snippet_occurrence_index = _global_occurrence_index_for_constraint(latex, latex_items, c)
 
     # Section and too-short filters (only among mapped)
     eligible: list[BulletConstraint] = []
@@ -250,6 +304,14 @@ def _extract_bullet_constraints(
         "stage0_dropped_low_confidence_sample": dropped_low_confidence[:20],
         "stage0_dropped_by_section_sample": dropped_by_section[:20],
         "stage0_dropped_too_short_sample": dropped_too_short[:20],
+        "stage0_global_occurrence_index_sample": [
+            {
+                "bullet_id": c.bullet_id,
+                "source_item_index": c.source_item_index,
+                "snippet_occurrence_index": c.snippet_occurrence_index,
+            }
+            for c in mapped_constraints[:20]
+        ],
     }
     return eligible, diagnostics
 

@@ -192,9 +192,10 @@ def extract_items_from_latex(latex: str) -> List[Dict]:
     logger = logging.getLogger(__name__)
     
     # Split into preamble and document body
+    doc_offset = 0
     if '\\begin{document}' in latex:
-        preamble = latex.split('\\begin{document}', 1)[0]
-        document = latex.split('\\begin{document}', 1)[1]
+        preamble, document = latex.split('\\begin{document}', 1)
+        doc_offset = len(preamble) + len("\\begin{document}")
     else:
         preamble = ""
         document = latex
@@ -344,9 +345,11 @@ def extract_items_from_latex(latex: str) -> List[Dict]:
     for i, item_info in enumerate(all_item_positions):
         if item_info["type"] == "custom":
             # Custom command - use the already extracted content
+            source_pos = doc_offset + int(item_info.get("pos", 0))
             items.append({
                 "text": item_info["item_text"],
                 "latex": item_info["item_latex"],
+                "source_pos": str(source_pos),
             })
         else:
             # Raw \item - extract content
@@ -383,9 +386,11 @@ def extract_items_from_latex(latex: str) -> List[Dict]:
             item_text = _strip_item_text(item_latex)
             
             if item_text:  # Only add non-empty items
+                source_pos = doc_offset + start_pos
                 items.append({
                     "text": item_text,
                     "latex": item_latex,
+                    "source_pos": str(source_pos),
                 })
     
     return items
@@ -2009,4 +2014,3 @@ def analyze_layout(
         current_pages=current_pages,
         target_pages=target_pages,
     )
-

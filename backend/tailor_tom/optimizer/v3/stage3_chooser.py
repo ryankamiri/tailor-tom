@@ -98,6 +98,24 @@ def _normalize_snippet(s: str) -> str:
     return " ".join(_strip_latex_commands(s or "").split())
 
 
+def _snippet_preview(s: str, max_len: int = 180) -> str:
+    """Compact single-line preview for debug logs."""
+    t = " ".join(_normalize_snippet(s).split())
+    return t if len(t) <= max_len else (t[: max_len - 3] + "...")
+
+
+def _matching_item_indices(items: list[dict], target_norm: str) -> list[int]:
+    """Return all item indices whose normalized latex equals target_norm."""
+    if not target_norm:
+        return []
+    out: list[int] = []
+    for i, item in enumerate(items):
+        item_norm = _normalize_snippet(item.get("latex", ""))
+        if item_norm == target_norm:
+            out.append(i)
+    return out
+
+
 def _verify_ownership_after_apply(
     final_latex: str,
     bullets: list[BulletConstraint],
@@ -115,17 +133,100 @@ def _verify_ownership_after_apply(
             continue
         chosen_latex = option_id_to_latex.get(option_id, "")
         orig_latex = bullet.latex_snippet or ""
-        if _normalize_snippet(chosen_latex) == _normalize_snippet(orig_latex):
+        chosen_norm = _normalize_snippet(chosen_latex)
+        orig_norm = _normalize_snippet(orig_latex)
+        if chosen_norm == orig_norm:
             continue
         src_idx = getattr(bullet, "source_item_index", bid - 1)
         if src_idx < 0:
             src_idx = bid - 1
         if src_idx >= len(items):
+            chosen_match_indices = _matching_item_indices(items, chosen_norm)
+            original_match_indices = _matching_item_indices(items, orig_norm)
+            if debug_enabled():
+                debug_log(
+                    logger,
+                    "stage3_ownership_mismatch",
+                    reason="source_index_out_of_range",
+                    bullet_id=bid,
+                    option_id=option_id,
+                    source_item_index=src_idx,
+                    item_count=len(items),
+                    snippet_occurrence_index=int(getattr(bullet, "snippet_occurrence_index", 0)),
+                    chosen_match_indices=chosen_match_indices,
+                    original_match_indices=original_match_indices,
+                    chosen_preview=_snippet_preview(chosen_latex),
+                    original_preview=_snippet_preview(orig_latex),
+                )
             return False, f"ownership check: source_item_index {src_idx} out of range (items={len(items)})"
         item_latex = items[src_idx].get("latex", "")
-        if _normalize_snippet(item_latex) != _normalize_snippet(chosen_latex):
+        if _normalize_snippet(item_latex) != chosen_norm:
+            chosen_match_indices = _matching_item_indices(items, chosen_norm)
+            original_match_indices = _matching_item_indices(items, orig_norm)
+            if debug_enabled():
+                debug_log(
+                    logger,
+                    "stage3_ownership_mismatch",
+                    reason="source_item_mismatch",
+                    bullet_id=bid,
+                    option_id=option_id,
+                    source_item_index=src_idx,
+                    item_count=len(items),
+                    snippet_occurrence_index=int(getattr(bullet, "snippet_occurrence_index", 0)),
+                    chosen_match_indices=chosen_match_indices,
+                    original_match_indices=original_match_indices,
+                    chosen_preview=_snippet_preview(chosen_latex),
+                    source_item_preview=_snippet_preview(item_latex),
+                    original_preview=_snippet_preview(orig_latex),
+                )
             return False, f"ownership check: item at source_item_index {src_idx} does not match chosen replacement for bullet {bid}"
     return True, ""
+
+
+def _verify_single_owned_apply(
+    latex_after_apply: str,
+    bullet: BulletConstraint,
+    option_id: str,
+    chosen_latex: str,
+) -> tuple[bool, dict]:
+    """Verify one applied replacement landed at bullet.source_item_index."""
+    items = extract_items_from_latex(latex_after_apply)
+    src_idx = int(getattr(bullet, "source_item_index", bullet.bullet_id - 1))
+    if src_idx < 0:
+        src_idx = bullet.bullet_id - 1
+    chosen_norm = _normalize_snippet(chosen_latex or "")
+    orig_norm = _normalize_snippet(bullet.latex_snippet or "")
+    chosen_match_indices = _matching_item_indices(items, chosen_norm)
+    original_match_indices = _matching_item_indices(items, orig_norm)
+    if src_idx >= len(items):
+        return False, {
+            "reason": "source_index_out_of_range",
+            "bullet_id": bullet.bullet_id,
+            "option_id": option_id,
+            "source_item_index": src_idx,
+            "item_count": len(items),
+            "snippet_occurrence_index": int(getattr(bullet, "snippet_occurrence_index", 0)),
+            "chosen_match_indices": chosen_match_indices,
+            "original_match_indices": original_match_indices,
+            "chosen_preview": _snippet_preview(chosen_latex),
+            "original_preview": _snippet_preview(bullet.latex_snippet or ""),
+        }
+    owned_item = items[src_idx].get("latex", "")
+    if _normalize_snippet(owned_item) != chosen_norm:
+        return False, {
+            "reason": "source_item_mismatch",
+            "bullet_id": bullet.bullet_id,
+            "option_id": option_id,
+            "source_item_index": src_idx,
+            "item_count": len(items),
+            "snippet_occurrence_index": int(getattr(bullet, "snippet_occurrence_index", 0)),
+            "chosen_match_indices": chosen_match_indices,
+            "original_match_indices": original_match_indices,
+            "chosen_preview": _snippet_preview(chosen_latex),
+            "source_item_preview": _snippet_preview(owned_item),
+            "original_preview": _snippet_preview(bullet.latex_snippet or ""),
+        }
+    return True, {}
 
 
 def _apply_choices_to_latex(
@@ -133,21 +234,97 @@ def _apply_choices_to_latex(
     bullets: list[BulletConstraint],
     choices: dict[int, str],
     option_id_to_latex: dict[str, str],
-) -> tuple[str, bool]:
-    """Apply chosen option per bullet using anchored snippet replacement. Returns (final_latex, all_applied)."""
+) -> tuple[str, dict[int, str], list[int]]:
+    """Apply chosen options with per-bullet fail-open.
+
+    Returns:
+    - final_latex: result after applying all successful non-original choices.
+    - effective_choices: final choice per bullet after fallbacks (failed bullets -> original).
+    - dropped_bullet_ids: bullets whose chosen candidate was dropped/fell back to original.
+    """
     bullet_by_id = {b.bullet_id: b for b in bullets}
     current = original_latex
+    effective_choices: dict[int, str] = dict(choices)
+    dropped_bullet_ids: list[int] = []
+    # Build an application plan first, then apply in an occurrence-safe order.
+    # Why: when multiple bullets share the same original snippet text, replacing lower
+    # occurrence indexes first can shift later occurrence targeting. For each snippet,
+    # apply higher snippet_occurrence_index first.
+    apply_plan: list[tuple[str, int, int, str, BulletConstraint, str]] = []
     for bid in sorted(choices.keys()):
         option_id = choices[bid]
+        if option_id.endswith("_orig"):
+            # Original choice means no edit required.
+            continue
         latex_snippet = option_id_to_latex.get(option_id)
         bullet = bullet_by_id.get(bid)
         if not bullet or latex_snippet is None:
-            return current, False
-        n = getattr(bullet, "snippet_occurrence_index", 0)
+            if debug_enabled():
+                debug_log(
+                    logger,
+                    "stage3_apply_failure",
+                    reason="missing_bullet_or_option",
+                    bullet_id=bid,
+                    option_id=option_id,
+                    bullet_exists=bullet is not None,
+                    option_exists=latex_snippet is not None,
+                )
+            effective_choices[bid] = f"b{bid}_orig"
+            dropped_bullet_ids.append(bid)
+            continue
+        n = int(getattr(bullet, "snippet_occurrence_index", 0))
+        apply_plan.append((bullet.latex_snippet or "", -n, bid, option_id, bullet, latex_snippet))
+
+    # Sort by snippet identity first, then descending occurrence index for that snippet.
+    # Tie-break by bullet_id for deterministic behavior.
+    apply_plan.sort(key=lambda row: (row[0], row[1], row[2]))
+    if debug_enabled():
+        debug_log(
+            logger,
+            "stage3_apply_order",
+            applied_count=len(apply_plan),
+            order=[{"bullet_id": bid, "option_id": oid, "occurrence_index": -neg_n} for _, neg_n, bid, oid, _, _ in apply_plan[:20]],
+        )
+    for _, neg_n, bid, option_id, bullet, latex_snippet in apply_plan:
+        n = -neg_n
         current, applied = replace_nth(current, bullet.latex_snippet, latex_snippet, n)
         if not applied:
-            return current, False
-    return current, True
+            if debug_enabled():
+                debug_log(
+                    logger,
+                    "stage3_apply_failure",
+                    reason="replace_nth_not_applied",
+                    bullet_id=bid,
+                    option_id=option_id,
+                    snippet_occurrence_index=n,
+                    bullet_source_item_index=getattr(bullet, "source_item_index", -1),
+                    original_snippet_preview=_snippet_preview(bullet.latex_snippet or ""),
+                    replacement_preview=_snippet_preview(latex_snippet or ""),
+                )
+            effective_choices[bid] = f"b{bid}_orig"
+            dropped_bullet_ids.append(bid)
+            continue
+        owned_ok, owned_meta = _verify_single_owned_apply(current, bullet, option_id, latex_snippet)
+        if not owned_ok:
+            if debug_enabled():
+                debug_log(logger, "stage3_apply_ownership_fail", **owned_meta)
+            # Roll back only this bullet by applying original snippet at the same anchored occurrence.
+            rolled_back, rollback_applied = replace_nth(current, latex_snippet, bullet.latex_snippet, n)
+            if rollback_applied:
+                current = rolled_back
+            effective_choices[bid] = f"b{bid}_orig"
+            dropped_bullet_ids.append(bid)
+            if debug_enabled():
+                debug_log(
+                    logger,
+                    "stage3_apply_drop_to_original",
+                    bullet_id=bid,
+                    option_id=option_id,
+                    rollback_applied=rollback_applied,
+                    snippet_occurrence_index=n,
+                )
+            continue
+    return current, effective_choices, dropped_bullet_ids
 
 
 def run_chooser(
@@ -258,23 +435,31 @@ def apply_and_verify(
     choices: dict[int, str],
     option_id_to_latex: dict[str, str],
     target_pages: int,
-) -> tuple[bool, str, Optional[bytes], int, bool, str]:
+) -> tuple[bool, str, Optional[bytes], int, bool, str, str, dict[int, str], list[int]]:
     """Apply choices, compile, run quality check.
-    Returns (success, error_message, pdf_bytes, page_count, quality_passes, quality_issues_summary).
+    Returns:
+    (success, error_message, pdf_bytes, page_count, quality_passes, quality_issues_summary, final_latex, effective_choices, dropped_bullet_ids).
     """
-    final_latex, all_applied = _apply_choices_to_latex(
+    final_latex, effective_choices, dropped_bullet_ids = _apply_choices_to_latex(
         original_latex, bullets, choices, option_id_to_latex
     )
-    if not all_applied:
-        return False, "Failed to apply some chooser selections", None, 0, False, ""
 
-    ownership_ok, ownership_err = _verify_ownership_after_apply(final_latex, bullets, choices, option_id_to_latex)
+    ownership_ok, ownership_err = _verify_ownership_after_apply(final_latex, bullets, effective_choices, option_id_to_latex)
     if not ownership_ok:
-        return False, f"Ownership verification failed: {ownership_err}", None, 0, False, ""
+        if debug_enabled():
+            debug_log(
+                logger,
+                "stage3_apply_and_verify_failure",
+                reason="ownership_failed",
+                ownership_error=ownership_err,
+                chosen_count=len(choices),
+                dropped_bullet_ids=dropped_bullet_ids,
+            )
+        return False, f"Ownership verification failed: {ownership_err}", None, 0, False, "", final_latex, effective_choices, dropped_bullet_ids
 
     compile_result = compile_latex(final_latex)
     if not compile_result.success:
-        return False, compile_result.error_message or "Final compile failed", None, 0, False, ""
+        return False, compile_result.error_message or "Final compile failed", None, 0, False, "", final_latex, effective_choices, dropped_bullet_ids
 
     quality = check_quality(
         pdf_bytes=compile_result.pdf_bytes or b"",
@@ -288,4 +473,7 @@ def apply_and_verify(
         compile_result.page_count or 0,
         quality.passes,
         quality.issues_summary,
+        final_latex,
+        effective_choices,
+        dropped_bullet_ids,
     )

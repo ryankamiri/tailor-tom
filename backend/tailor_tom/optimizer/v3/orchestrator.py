@@ -258,7 +258,7 @@ def optimize_resume_v3(
     diagnostics["missing_filled_count"] = chooser_result.missing_filled_count
     diagnostics["invalid_cross_bullet_choice_count"] = chooser_result.invalid_cross_bullet_choice_count
 
-    success, err, pdf_bytes, page_count, quality_passes, quality_issues = apply_and_verify(
+    success, err, pdf_bytes, page_count, quality_passes, quality_issues, final_latex, effective_choices, dropped_bullet_ids = apply_and_verify(
         original_latex,
         bullets,
         choices,
@@ -268,6 +268,16 @@ def optimize_resume_v3(
 
     if not success:
         diagnostics["mapping_integrity_passed"] = False
+        diagnostics["chooser_selected"] = choices
+        if debug_enabled():
+            debug_log(
+                logger,
+                "v3_final_apply_failure",
+                error=err,
+                chosen_count=len(choices),
+                chooser_selected=choices,
+                dropped_bullet_ids=dropped_bullet_ids,
+            )
         return V3OptimizationResult(
             success=False,
             error_message=err,
@@ -279,15 +289,14 @@ def optimize_resume_v3(
             diagnostics=diagnostics,
         )
 
-    # Build optimized_latex from applied choices (we need to re-apply to get string)
-    from tailor_tom.optimizer.v3.stage3_chooser import _apply_choices_to_latex
-    final_latex, _ = _apply_choices_to_latex(original_latex, bullets, choices, option_id_to_latex)
-
     diagnostics["chooser_selected"] = choices
+    diagnostics["chooser_effective_selected"] = effective_choices
+    diagnostics["stage3_dropped_bullet_ids"] = dropped_bullet_ids
+    diagnostics["stage3_dropped_bullet_count"] = len(dropped_bullet_ids)
     diagnostics["fallback_filled_bullet_ids"] = chooser_result.missing_filled_bullet_ids
-    changed_bullet_count = sum(1 for bid, oid in choices.items() if oid != f"b{bid}_orig")
+    changed_bullet_count = sum(1 for bid, oid in effective_choices.items() if oid != f"b{bid}_orig")
     diagnostics["changed_bullet_count"] = changed_bullet_count
-    diagnostics["original_kept_count"] = len(choices) - changed_bullet_count
+    diagnostics["original_kept_count"] = len(effective_choices) - changed_bullet_count
     diagnostics["j"] = len(all_candidates)
     diagnostics["mapping_integrity_passed"] = True
     # Drop large refs so they can be GC'd before return
