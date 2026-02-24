@@ -45,6 +45,16 @@ def _repair_hint_for_reason(reason_code: str) -> str:
     return hints.get(reason_code, "Address validation failure.")
 
 
+def _bullet_id_from_option_id(option_id: str) -> Optional[int]:
+    """Parse b{N}_... -> N."""
+    if not option_id or not option_id.startswith("b"):
+        return None
+    try:
+        return int(option_id.split("_", 1)[0][1:])
+    except (ValueError, IndexError):
+        return None
+
+
 def optimize_resume_v3(
     resume_latex: str,
     job_description: str,
@@ -52,7 +62,7 @@ def optimize_resume_v3(
     max_iterations: int = 3,
     job_id: Optional[str] = None,
 ) -> V3OptimizationResult:
-    """Run V3 Stage 0-3. No V2 logic; chooser is sole authority. Hard fail before Stage 3 if any bullet has zero feasible generated."""
+    """Run V3 Stage 0-3. No V2 logic; chooser is sole authority."""
     del job_id  # reserved for future status hooks
 
     # Stage 0
@@ -109,6 +119,8 @@ def optimize_resume_v3(
         "k": len(bullets),
         "pass1_reason_histogram_by_iter": [],
         "pass2_reason_histogram_by_iter": [],
+        "rejection_reasons_by_bullet": {},
+        "zero_feasible_fallback_to_original": False,
         "bullets_with_zero_feasible_generated": [],
         "early_stop": False,
         "max_iterations_used": 0,
@@ -165,6 +177,7 @@ def optimize_resume_v3(
                 reason_code = (getattr(last_feas, "pass1_fail", {}) or {}).get(c.option_id) or (getattr(last_feas, "pass2_fail", {}) or {}).get(c.option_id)
                 if not reason_code:
                     continue
+                pass1_details = (getattr(last_feas, "pass1_fail_details", {}) or {}).get(c.option_id, {})
                 bullet = bullet_by_id.get(c.bullet_id)
                 repl = (c.replacement_latex or "").strip()
                 repl_plain = repl  # use as-is for char count; word count from split
@@ -174,7 +187,21 @@ def optimize_resume_v3(
                 char_delta = repl_chars - bullet.char_count if bullet else 0
                 old_lines = bullet.line_count if bullet else 0
                 repair_hint = _repair_hint_for_reason(reason_code)
-                part = f"reason_code={reason_code}; old_lines={old_lines}; word_delta={word_delta:+d}; char_delta={char_delta:+d}; repair_hint={repair_hint}"
+                min_words_allowed = pass1_details.get("min_words_allowed")
+                max_words_allowed = pass1_details.get("max_words_allowed")
+                max_chars_allowed = pass1_details.get("max_chars_allowed")
+                max_shrink_words_allowed = pass1_details.get("max_shrink_words_allowed")
+                max_shrink_percent_allowed = pass1_details.get("max_shrink_percent_allowed")
+                part = (
+                    f"reason_code={reason_code}; old_lines={old_lines}; "
+                    f"word_delta={word_delta:+d}; char_delta={char_delta:+d}; "
+                    f"required_min_words={min_words_allowed}; required_max_words={max_words_allowed}; "
+                    f"required_max_chars={max_chars_allowed}; allowed_word_shrink={max_shrink_words_allowed}; "
+                    f"allowed_char_shrink_pct={max_shrink_percent_allowed}; "
+                    f"actual_words={pass1_details.get('repl_words', repl_words)}; "
+                    f"actual_chars={pass1_details.get('repl_chars', repl_chars)}; "
+                    f"repair_hint={repair_hint}"
+                )
                 failed_feedback[c.bullet_id] = failed_feedback.get(c.bullet_id, "") + (" | " if failed_feedback.get(c.bullet_id) else "") + part
 
         gen_bullets = bullets if iteration == 0 else [b for b in bullets if b.bullet_id in bullets_with_zero]
@@ -200,6 +227,18 @@ def optimize_resume_v3(
         for k, v in feas.pass2_reason_histogram.items():
             pass2_hist_merged[k] = pass2_hist_merged.get(k, 0) + v
 
+        # Per-bullet reject reasons for debugging (helps explain bullets like 4/5).
+        per_bullet = diagnostics.get("rejection_reasons_by_bullet") or {}
+        for fail_map in (feas.pass1_fail, feas.pass2_fail):
+            for oid, reason in (fail_map or {}).items():
+                bid = _bullet_id_from_option_id(oid)
+                if bid is None:
+                    continue
+                bkey = str(bid)
+                bucket = per_bullet.setdefault(bkey, {})
+                bucket[reason] = int(bucket.get(reason, 0)) + 1
+        diagnostics["rejection_reasons_by_bullet"] = per_bullet
+
         diagnostics["pass1_reason_histogram_by_iter"].append(dict(feas.pass1_reason_histogram))
         diagnostics["pass2_reason_histogram_by_iter"].append(dict(feas.pass2_reason_histogram))
 
@@ -217,16 +256,8 @@ def optimize_resume_v3(
         for oid in feasible_option_ids
     )]
     if bullets_with_zero_final:
-        return V3OptimizationResult(
-            success=False,
-            error_message="At least one bullet has zero feasible generated candidates after max iterations",
-            optimized_latex=original_latex,
-            pdf_bytes=compile_result.pdf_bytes if compile_result else None,
-            page_count=compile_result.page_count if compile_result else 0,
-            passes_done=used_iterations,
-            token_usage=token_usage_acc,
-            diagnostics={**diagnostics, "bullets_with_zero_feasible_generated": bullets_with_zero_final},
-        )
+        diagnostics["zero_feasible_fallback_to_original"] = True
+        diagnostics["bullets_with_zero_feasible_generated"] = bullets_with_zero_final
 
     # Build options per bullet for chooser
     options_per_bullet: dict[int, list[str]] = {}
@@ -257,6 +288,9 @@ def optimize_resume_v3(
     diagnostics["missing_filled_bullet_ids"] = chooser_result.missing_filled_bullet_ids
     diagnostics["missing_filled_count"] = chooser_result.missing_filled_count
     diagnostics["invalid_cross_bullet_choice_count"] = chooser_result.invalid_cross_bullet_choice_count
+    diagnostics["forced_changed_bullet_ids"] = chooser_result.forced_changed_bullet_ids
+    diagnostics["forced_changed_count"] = len(chooser_result.forced_changed_bullet_ids)
+    diagnostics["min_changed_target"] = chooser_result.min_changed_target
 
     success, err, pdf_bytes, page_count, quality_passes, quality_issues, final_latex, effective_choices, dropped_bullet_ids = apply_and_verify(
         original_latex,

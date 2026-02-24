@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from tailor_tom.latex_compiler import compile_latex
 from tailor_tom.layout_analyzer import check_quality, extract_items_from_latex
+from tailor_tom.config import settings
 
 from tailor_tom.optimizer.v3.stage0_preprocess import BulletConstraint, _strip_latex_commands, replace_nth
 from tailor_tom.optimizer.v3.llm_usage import TokenUsage, usage_from_counts
@@ -27,6 +29,8 @@ class ChooserResult:
     missing_filled_bullet_ids: list[int] = field(default_factory=list)
     missing_filled_count: int = 0
     invalid_cross_bullet_choice_count: int = 0
+    forced_changed_bullet_ids: list[int] = field(default_factory=list)
+    min_changed_target: int = 0
 
 
 class ChooserRow(BaseModel):
@@ -337,9 +341,13 @@ def run_chooser(
     """Run DSPy chooser. Returns ChooserResult or None on failure."""
     options_str = _format_options_for_chooser(bullets, options_per_bullet, option_id_to_latex)
     resume_context = _format_resume_context_for_chooser(bullets)
+    min_changed_bullets = max(0, int(getattr(settings, "optimizer_min_changed_bullets", 0)))
+    min_changed_ratio = max(0.0, float(getattr(settings, "optimizer_min_changed_ratio", 0.0)))
+    min_changed_target = max(min_changed_bullets, int(math.ceil(min_changed_ratio * len(bullets))))
     selection_policy = (
         "Pick one option per bullet that best improves overall JD alignment, "
-        "while minimizing redundant keyword repetition and keeping strong originals when alternatives are weak."
+        "while minimizing redundant keyword repetition. "
+        f"Target at least {min_changed_target} changed bullets when feasible non-original options exist."
     )
     prompt_chars = len(job_description) + len(resume_context) + len(options_str) + len(selection_policy)
     try:
@@ -404,6 +412,23 @@ def run_chooser(
         choices_dict[bid] = fallback
         missing_filled.append(bid)
 
+    # Enforce minimum changed bullets by promoting some originals to first feasible non-original option.
+    forced_changed: list[int] = []
+    changed_count = sum(1 for bid, oid in choices_dict.items() if oid != f"b{bid}_orig")
+    if changed_count < min_changed_target:
+        need = min_changed_target - changed_count
+        promotable: list[tuple[int, str]] = []
+        for bid in sorted(required_bullet_ids):
+            if choices_dict.get(bid) != f"b{bid}_orig":
+                continue
+            opts = options_per_bullet.get(bid, [])
+            non_orig = [oid for oid in opts if oid in valid_option_ids and oid != f"b{bid}_orig"]
+            if non_orig:
+                promotable.append((bid, non_orig[0]))
+        for bid, promote_oid in promotable[:need]:
+            choices_dict[bid] = promote_oid
+            forced_changed.append(bid)
+
     completion_chars = 0
     try:
         completion_chars = len(json.dumps(raw))
@@ -418,6 +443,8 @@ def run_chooser(
             missing_filled_count=len(missing_filled),
             missing_filled_bullet_ids=missing_filled,
             invalid_cross_bullet_choice_count=invalid_cross_bullet_choice_count,
+            forced_changed_bullet_ids=forced_changed,
+            min_changed_target=min_changed_target,
             usage_source=usage.usage_source,
         )
     return ChooserResult(
@@ -426,6 +453,8 @@ def run_chooser(
         missing_filled_bullet_ids=missing_filled,
         missing_filled_count=len(missing_filled),
         invalid_cross_bullet_choice_count=invalid_cross_bullet_choice_count,
+        forced_changed_bullet_ids=forced_changed,
+        min_changed_target=min_changed_target,
     )
 
 

@@ -167,7 +167,7 @@ class Settings(BaseSettings):
         description="Max allowed word growth per rewritten bullet (V3 pass-1 guard).",
     )
     optimizer_max_shrink_words: int = Field(
-        default=3,
+        default=6,
         ge=0,
         le=20,
         description="Max words allowed to be removed per bullet (V3 pass-1 shrink limit).",
@@ -178,11 +178,41 @@ class Settings(BaseSettings):
         le=1.0,
         description="Max character shrink fraction per bullet (V3 pass-1 shrink limit).",
     )
+    optimizer_short_bullet_word_threshold: int = Field(
+        default=22,
+        ge=2,
+        le=80,
+        description="Bullets with word_count <= threshold are treated as short for adaptive pass-1 shrink limits.",
+    )
+    optimizer_short_bullet_max_shrink_ratio: float = Field(
+        default=0.30,
+        ge=0.0,
+        le=1.0,
+        description="For short bullets, adaptive max shrink words is at least ceil(word_count * ratio).",
+    )
+    optimizer_short_bullet_max_shrink_percent: float = Field(
+        default=0.22,
+        ge=0.0,
+        le=1.0,
+        description="For short bullets, pass-1 allows up to this character shrink percent (max with global setting).",
+    )
     optimizer_mapping_min_similarity: float = Field(
         default=0.74,
         ge=0.0,
         le=1.0,
         description="V3 mapping: minimum normalized similarity (original_text vs latex_source) to keep a bullet. Below = drop and continue.",
+    )
+    optimizer_min_changed_bullets: int = Field(
+        default=4,
+        ge=0,
+        le=50,
+        description="Minimum number of bullets chooser should change when feasible non-original options exist.",
+    )
+    optimizer_min_changed_ratio: float = Field(
+        default=0.30,
+        ge=0.0,
+        le=1.0,
+        description="Minimum changed-bullet ratio target for chooser (applied with optimizer_min_changed_bullets using max target).",
     )
 
     # Optimizer V2 debug observability (all DEBUG lines prefixed with 'DEBUG ')

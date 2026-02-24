@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -15,6 +16,21 @@ from tailor_tom.optimizer.v3.usage_extractor import resolve_usage
 from tailor_tom.optimizer.v3.debug_logging import debug_enabled, debug_log
 
 logger = logging.getLogger(__name__)
+
+
+def _adaptive_word_window_for_prompt(b: BulletConstraint) -> tuple[int, int]:
+    """Compute min/max words guidance for Stage1 prompt (mirrors Stage2 adaptive policy)."""
+    max_word_growth = max(0, int(getattr(settings, "optimizer_max_word_growth", 0)))
+    base_max_shrink_words = max(0, int(getattr(settings, "optimizer_max_shrink_words", 3)))
+    short_threshold = max(2, int(getattr(settings, "optimizer_short_bullet_word_threshold", 22)))
+    short_ratio = max(0.0, min(1.0, float(getattr(settings, "optimizer_short_bullet_max_shrink_ratio", 0.30))))
+    if b.word_count <= short_threshold:
+        adaptive_shrink_words = max(base_max_shrink_words, int(math.ceil(b.word_count * short_ratio)))
+    else:
+        adaptive_shrink_words = base_max_shrink_words
+    min_words_allowed = max(2, b.word_count - adaptive_shrink_words)
+    max_words_allowed = b.word_count + max_word_growth
+    return min_words_allowed, max_words_allowed
 
 
 class CandidateRow(BaseModel):
@@ -87,6 +103,8 @@ def _format_bullets_for_llm(
             f"**B{b.bullet_id}** [{b.section}] MUST stay {b.line_count} line(s), "
             f"max {b.word_count} words, original chars {b.char_count}"
         )
+        min_words_allowed, max_words_allowed = _adaptive_word_window_for_prompt(b)
+        lines.append(f"Word window: min {min_words_allowed}, max {max_words_allowed}")
         lines.append(f"Plain: {b.original_text}")
         lines.append(f"LaTeX: {b.latex_snippet}")
         lines.append("")

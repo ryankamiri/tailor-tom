@@ -1,6 +1,7 @@
 """Stage 2: two-pass feasibility (pass1 static, pass2 slot compile) and reason codes."""
 
 import re
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -34,32 +35,61 @@ REASON_ANCHORED_OUTSIDE_OWNED_ITEM = "anchored_outside_owned_item"
 def _validate_pass1(
     bullet: BulletConstraint,
     replacement_latex: str,
-) -> tuple[bool, str]:
-    """Pass1 static checks. Returns (ok, reason_code). Uses settings for limits."""
+) -> tuple[bool, str, dict]:
+    """Pass1 static checks. Returns (ok, reason_code, details). Uses settings for limits."""
     max_word_growth = max(0, int(getattr(settings, "optimizer_max_word_growth", 0)))
     max_char_growth = max(0, int(getattr(settings, "optimizer_max_char_growth", 10)))
-    max_shrink_words = max(0, int(getattr(settings, "optimizer_max_shrink_words", 3)))
-    max_shrink_percent = max(0.0, min(1.0, float(getattr(settings, "optimizer_max_shrink_percent", 0.15))))
+    base_max_shrink_words = max(0, int(getattr(settings, "optimizer_max_shrink_words", 3)))
+    base_max_shrink_percent = max(0.0, min(1.0, float(getattr(settings, "optimizer_max_shrink_percent", 0.15))))
+    short_threshold = max(2, int(getattr(settings, "optimizer_short_bullet_word_threshold", 22)))
+    short_ratio = max(0.0, min(1.0, float(getattr(settings, "optimizer_short_bullet_max_shrink_ratio", 0.30))))
+    short_max_shrink_percent = max(0.0, min(1.0, float(getattr(settings, "optimizer_short_bullet_max_shrink_percent", 0.22))))
+
+    # Adaptive per-bullet shrink limits:
+    # short bullets get a wider allowed shrink window to avoid repeated too_short_words failures.
+    if bullet.word_count <= short_threshold:
+        adaptive_shrink_words = max(base_max_shrink_words, int(math.ceil(bullet.word_count * short_ratio)))
+        adaptive_shrink_percent = max(base_max_shrink_percent, short_max_shrink_percent)
+    else:
+        adaptive_shrink_words = base_max_shrink_words
+        adaptive_shrink_percent = base_max_shrink_percent
 
     clean = _strip_latex_commands(replacement_latex or "")
     repl_words = len(clean.split()) if clean else 0
     repl_chars = len(clean) if clean else 0
+    max_words_allowed = bullet.word_count + max_word_growth
+    min_words_allowed = max(2, bullet.word_count - adaptive_shrink_words)
+    max_chars_allowed = bullet.char_count + max_char_growth
+    max_char_shrink_allowed = adaptive_shrink_percent
+    details = {
+        "bullet_word_count": bullet.word_count,
+        "bullet_char_count": bullet.char_count,
+        "repl_words": repl_words,
+        "repl_chars": repl_chars,
+        "max_words_allowed": max_words_allowed,
+        "min_words_allowed": min_words_allowed,
+        "max_chars_allowed": max_chars_allowed,
+        "max_shrink_words_allowed": adaptive_shrink_words,
+        "max_shrink_percent_allowed": round(max_char_shrink_allowed, 4),
+    }
 
-    if repl_words > bullet.word_count + max_word_growth:
-        return False, REASON_TOO_LONG_WORDS
-    if repl_chars > bullet.char_count + max_char_growth:
-        return False, REASON_TOO_LONG_CHARS
+    if repl_words > max_words_allowed:
+        return False, REASON_TOO_LONG_WORDS, details
+    if repl_chars > max_chars_allowed:
+        return False, REASON_TOO_LONG_CHARS, details
     word_shrink = bullet.word_count - repl_words
-    if word_shrink > max_shrink_words:
-        return False, REASON_TOO_SHORT_WORDS
+    details["word_shrink"] = word_shrink
+    if word_shrink > adaptive_shrink_words:
+        return False, REASON_TOO_SHORT_WORDS, details
     if bullet.char_count > 0:
         char_shrink = (bullet.char_count - repl_chars) / bullet.char_count
-        if char_shrink > max_shrink_percent:
-            return False, REASON_TOO_SHORT_PERCENT
+        details["char_shrink"] = round(char_shrink, 4)
+        if char_shrink > adaptive_shrink_percent:
+            return False, REASON_TOO_SHORT_PERCENT, details
     if repl_words < 2:
-        return False, REASON_TOO_SHORT_WORDS
+        return False, REASON_TOO_SHORT_WORDS, details
 
-    return True, ""
+    return True, "", details
 
 
 def _apply_replacement_to_latex(
@@ -196,6 +226,7 @@ class FeasibilityResult:
     """Result of Stage 2 two-pass feasibility."""
     feasible_option_ids: set[str] = field(default_factory=set)
     pass1_fail: dict[str, str] = field(default_factory=dict)  # option_id -> reason_code
+    pass1_fail_details: dict[str, dict] = field(default_factory=dict)  # option_id -> numeric context
     pass2_fail: dict[str, str] = field(default_factory=dict)
     pass1_reason_histogram: dict[str, int] = field(default_factory=dict)
     pass2_reason_histogram: dict[str, int] = field(default_factory=dict)
@@ -218,14 +249,16 @@ def run_feasibility(
     # Pass1: static + snippet apply
     pass1_ok: set[str] = set()
     pass1_fail: dict[str, str] = {}
+    pass1_fail_details: dict[str, dict] = {}
     for c in candidates:
         bullet = bullet_by_id.get(c.bullet_id)
         if not bullet:
             pass1_fail[c.option_id] = REASON_INVALID_PAYLOAD
             continue
-        ok, reason = _validate_pass1(bullet, c.replacement_latex)
+        ok, reason, details = _validate_pass1(bullet, c.replacement_latex)
         if not ok:
             pass1_fail[c.option_id] = reason
+            pass1_fail_details[c.option_id] = details
             continue
         applied_latex, applied, noop = _apply_replacement_to_latex(original_latex, bullet, c.replacement_latex)
         if noop:
@@ -366,6 +399,7 @@ def run_feasibility(
     return FeasibilityResult(
         feasible_option_ids=feasible,
         pass1_fail=pass1_fail,
+        pass1_fail_details=pass1_fail_details,
         pass2_fail=pass2_fail,
         pass1_reason_histogram=pass1_hist,
         pass2_reason_histogram=pass2_hist,
