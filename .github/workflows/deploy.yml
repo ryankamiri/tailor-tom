@@ -16,6 +16,7 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 40m
           script: |
             set -e
             cd ${{ secrets.DEPLOY_PATH }}
