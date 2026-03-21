@@ -18,6 +18,7 @@ JOB_CACHE_TTL_SECONDS = 10 * 60
 JOB_LIST_CACHE_TTL_SECONDS = 90
 USER_PROFILE_CACHE_TTL_SECONDS = 10 * 60
 ADMIN_USER_COSTS_CACHE_TTL_SECONDS = 900  # 15 min
+ADMIN_ALL_JOBS_CACHE_TTL_SECONDS = 900  # 15 min
 
 # Canonical job envelope: all readers (user detail, admin detail, worker) use this shape.
 CACHE_SCHEMA_VERSION = 2
@@ -151,6 +152,7 @@ def on_job_write_invalidate(user_id: str, job_id: str, include_profile: bool = T
     try:
         invalidate_job_related_cache(user_id, job_id, include_profile=include_profile)
         invalidate_admin_user_costs_cache()
+        invalidate_admin_all_jobs_cache()
     except Exception as e:
         logger.warning("Job write invalidation failed: %s", e)
 
@@ -206,6 +208,53 @@ def set_admin_user_costs_cache(
         )
     except Exception as e:
         logger.warning("Admin user-costs cache set failed: %s", e)
+
+
+def _admin_all_jobs_cache_key(limit: int, cursor: str | None, status: list[str] | None, search: str | None) -> str:
+    status_key = ",".join(sorted(status)) if status else "all"
+    search_key = (search or "").strip().lower() or "none"
+    cursor_key = cursor or "first"
+    return f"cache:admin:all-jobs:limit:{limit}:cursor:{cursor_key}:status:{status_key}:search:{search_key}"
+
+
+def get_admin_all_jobs_cache(limit: int, cursor: str | None, status: list[str] | None, search: str | None) -> dict[str, Any] | None:
+    """Return cached admin all-jobs list or None (fail-open)."""
+    try:
+        key = _admin_all_jobs_cache_key(limit, cursor, status, search)
+        raw = get_redis_client().get(key)
+        data = _safe_json_loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        logger.warning("Admin all-jobs cache get failed: %s", e)
+        return None
+
+
+def set_admin_all_jobs_cache(limit: int, cursor: str | None, status: list[str] | None, search: str | None, payload: dict[str, Any]) -> None:
+    """Cache admin all-jobs list. Fail-open on Redis error."""
+    try:
+        key = _admin_all_jobs_cache_key(limit, cursor, status, search)
+        get_redis_client().setex(key, ADMIN_ALL_JOBS_CACHE_TTL_SECONDS, _safe_json_dumps(payload))
+    except Exception as e:
+        logger.warning("Admin all-jobs cache set failed: %s", e)
+
+
+def invalidate_admin_all_jobs_cache() -> None:
+    """Invalidate all admin all-jobs cache keys. Fail-open."""
+    try:
+        rc = get_redis_client()
+        pattern = "cache:admin:all-jobs:*"
+        scan_cursor = 0
+        keys_to_delete: list[str] = []
+        while True:
+            scan_cursor, keys = rc.scan(cursor=scan_cursor, match=pattern, count=200)
+            if keys:
+                keys_to_delete.extend(keys)
+            if scan_cursor == 0:
+                break
+        if keys_to_delete:
+            rc.delete(*keys_to_delete)
+    except Exception as e:
+        logger.warning("Admin all-jobs cache invalidate failed: %s", e)
 
 
 def invalidate_admin_user_costs_cache() -> None:

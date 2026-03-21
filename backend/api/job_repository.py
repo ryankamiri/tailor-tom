@@ -289,6 +289,58 @@ def list_jobs_for_admin_user_cursor(
     return rows, next_cursor
 
 
+def list_all_jobs_for_admin_cursor(
+    db: Session,
+    *,
+    limit: int,
+    cursor: str | None,
+    status: list[str] | None = None,
+    search: str | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Admin: list all jobs across all users, newest first, with user info.
+    Returns serialized list (with user fields) and next_cursor."""
+    query = db.query(Job, User).join(User, Job.user_id == User.id)
+    if status:
+        query = query.filter(Job.status.in_(status))
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                Job.id.ilike(term),
+                Job.company_name.ilike(term),
+                User.email.ilike(term),
+                (User.first_name + " " + User.last_name).ilike(term),
+            )
+        )
+    if cursor:
+        cursor_created_at, cursor_id = decode_cursor(cursor)
+        query = query.filter(
+            tuple_(Job.created_at, Job.id) < tuple_(cursor_created_at, cursor_id)
+        )
+    rows = (
+        query
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(limit + 1)
+        .all()
+    )
+    next_cursor = None
+    if len(rows) > limit:
+        last_job = rows[limit - 1][0]
+        next_cursor = encode_cursor(last_job.created_at, last_job.id)
+        rows = rows[:limit]
+    items = [
+        {
+            **serialize_job_for_list(job),
+            "user_id": str(user.id),
+            "user_email": user.email,
+            "user_first_name": user.first_name or "",
+            "user_last_name": user.last_name or "",
+        }
+        for job, user in rows
+    ]
+    return items, next_cursor
+
+
 def get_job_for_admin_user(db: Session, job_id: str, user_id: UUID) -> Job | None:
     """Admin: strict user-scoped fetch for one job. Returns None if job missing or wrong user."""
     return (

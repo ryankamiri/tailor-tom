@@ -32,6 +32,7 @@ import { AdminOverviewStrip } from '@/components/admin/admin-overview-strip';
 import { AdminUsersTable } from '@/components/admin/admin-users-table';
 import { AdminUserDetailDrawer } from '@/components/admin/admin-user-detail-drawer';
 import { AdminHealthPanel } from '@/components/admin/admin-health-panel';
+import { AdminAllJobsPanel } from '@/components/admin/admin-all-jobs-panel';
 import { RequireAuth } from '@/components/layout/require-auth';
 import { useAuth } from '@/contexts/auth-context';
 import { toast } from 'sonner';
@@ -243,6 +244,7 @@ function AdminContent() {
       <Tabs defaultValue="users" className="space-y-4">
         <TabsList>
           <TabsTrigger value="users">Users</TabsTrigger>
+          <TabsTrigger value="jobs">Jobs</TabsTrigger>
           <TabsTrigger value="health">Optimizer Health</TabsTrigger>
           <TabsTrigger value="costs">Costs</TabsTrigger>
           <TabsTrigger value="resumes">Resumes</TabsTrigger>
@@ -265,6 +267,10 @@ function AdminContent() {
           ) : (
             <p className="text-muted-foreground">No user data.</p>
           )}
+        </TabsContent>
+
+        <TabsContent value="jobs" className="space-y-4">
+          <AdminAllJobsPanel />
         </TabsContent>
 
         <TabsContent value="health">

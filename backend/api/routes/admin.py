@@ -16,6 +16,8 @@ from api.cache import (
     cache_get_or_set_dict,
     get_admin_user_costs_cache,
     set_admin_user_costs_cache,
+    get_admin_all_jobs_cache,
+    set_admin_all_jobs_cache,
 )
 from api.database import get_db
 from api.db_models import User
@@ -25,6 +27,7 @@ from api.job_repository import (
     get_admin_user_summary,
     get_admin_users,
     get_admin_v3_health,
+    list_all_jobs_for_admin_cursor,
     list_jobs_for_admin_user_cursor,
     get_job_for_admin_user,
     fetch_job_envelope_cached,
@@ -232,6 +235,38 @@ def _parse_user_id(user_id: str) -> UUID:
         return UUID(user_id)
     except ValueError as e:
         raise HTTPException(status_code=422, detail="Invalid user_id") from e
+
+
+@router.get("/admin/jobs")
+async def list_all_admin_jobs(
+    identity: CurrentUserIdentity = Depends(require_admin),
+    db: Session = Depends(get_db),
+    limit: int = Query(default=20, ge=1, le=100),
+    cursor: str | None = Query(default=None),
+    status: list[str] | None = Query(default=None),
+    search: str | None = Query(default=None),
+):
+    """List all jobs across all users, newest first (admin only). Cached for 15 min."""
+    status_filter = list(status) if status else None
+
+    cached = get_admin_all_jobs_cache(limit, cursor, status_filter, search)
+    if cached is not None:
+        return cached
+
+    try:
+        items, next_cursor = list_all_jobs_for_admin_cursor(
+            db,
+            limit=limit,
+            cursor=cursor,
+            status=status_filter,
+            search=search,
+        )
+    except InvalidCursorError:
+        raise HTTPException(status_code=400, detail="Invalid cursor")
+
+    payload = {"items": items, "next_cursor": next_cursor}
+    set_admin_all_jobs_cache(limit, cursor, status_filter, search, payload)
+    return payload
 
 
 @router.get("/admin/users/{user_id}/jobs")

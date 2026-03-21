@@ -115,6 +115,20 @@ export interface AdminUserJobsListResponse {
   user_id: string;
 }
 
+/** Admin: one item in GET /api/admin/jobs (global list). */
+export interface AdminAllJobsItem extends JobListItem {
+  user_id: string;
+  user_email: string;
+  user_first_name: string;
+  user_last_name: string;
+}
+
+/** Admin: GET /api/admin/jobs response. */
+export interface AdminAllJobsResponse {
+  items: AdminAllJobsItem[];
+  next_cursor: string | null;
+}
+
 export interface DiffItemChange {
   type: 'removed' | 'added' | 'unchanged';
   text: string;
@@ -373,6 +387,24 @@ export async function listAdminUserJobs(
   if (!res.ok) {
     const error = await res.json().catch(() => ({ detail: 'Failed to list user jobs' }));
     throw new Error(error.detail || 'Failed to list user jobs');
+  }
+  return res.json();
+}
+
+export async function listAdminAllJobs(
+  params: ListAdminUserJobsParams = {}
+): Promise<AdminAllJobsResponse> {
+  const searchParams = new URLSearchParams();
+  if (params.limit != null) searchParams.set('limit', String(params.limit));
+  if (params.cursor) searchParams.set('cursor', params.cursor);
+  if (params.status?.length) params.status.forEach((s) => searchParams.append('status', s));
+  if (params.search) searchParams.set('search', params.search);
+  const qs = searchParams.toString();
+  const url = `${API_BASE}/api/admin/jobs${qs ? `?${qs}` : ''}`;
+  const res = await authFetch(url);
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: 'Failed to list jobs' }));
+    throw new Error(error.detail || 'Failed to list jobs');
   }
   return res.json();
 }
