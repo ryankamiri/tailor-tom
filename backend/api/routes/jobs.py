@@ -89,6 +89,7 @@ def _envelope_to_status_response(envelope: dict) -> JobStatusResponse:
         "llm_completion_tokens": envelope.get("llm_completion_tokens"),
         "llm_estimated_cost_usd": envelope.get("llm_estimated_cost_usd"),
         "llm_usage_source": envelope.get("llm_usage_source"),
+        "job_description": envelope.get("job_description"),
     }
     analysis_raw = envelope.get("analysis_json")
     if isinstance(analysis_raw, dict):

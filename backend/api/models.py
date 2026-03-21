@@ -60,6 +60,7 @@ class JobStatusResponse(BaseModel):
     llm_usage_source: Optional[str] = None
     analysis: Optional[JobDetailAnalysis] = None
     analysis_parse_failed: Optional[bool] = None
+    job_description: Optional[str] = None
 
 
 class DiffItemChange(BaseModel):
