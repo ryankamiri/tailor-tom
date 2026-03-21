@@ -332,6 +332,7 @@ async def get_admin_user_job_detail(
         "llm_estimated_cost_usd": envelope.get("llm_estimated_cost_usd"),
         "llm_usage_source": envelope.get("llm_usage_source"),
         "owner_user_id": envelope["owner_user_id"],
+        "job_description": envelope.get("job_description"),
     }
     if isinstance(envelope.get("analysis_json"), dict):
         payload["analysis"] = envelope["analysis_json"]
