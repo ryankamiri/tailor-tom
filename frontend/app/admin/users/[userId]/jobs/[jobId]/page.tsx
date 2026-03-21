@@ -153,6 +153,27 @@ function AdminJobDetailContent() {
 
       <JobStatusView status={jobStatus.status} errorMessage={jobStatus.error_message} />
 
+      {jobStatus.error_log && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium text-muted-foreground">Error Log</h2>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                navigator.clipboard.writeText(jobStatus.error_log ?? '');
+                toast.success('Copied to clipboard');
+              }}
+            >
+              Copy
+            </Button>
+          </div>
+          <pre className="rounded-md border bg-muted px-4 py-3 text-xs font-mono overflow-x-auto max-h-[60vh] overflow-y-auto whitespace-pre-wrap break-words">
+            {jobStatus.error_log}
+          </pre>
+        </div>
+      )}
+
       {optimizedLatex && (
         <JobResultsView
           originalLatex={originalLatex || optimizedLatex}

@@ -27,7 +27,9 @@ from api.storage import (
     get_orphaned_processing_jobs,
     get_stuck_pending_jobs,
     get_redis_client,
+    save_job_error_log,
 )
+from worker.log_capture import capture_task_logs
 from api.database import SessionLocal
 from api.user_job_counts import on_job_terminated
 from tailor_tom.config import settings
@@ -40,6 +42,16 @@ from worker.discord_webhook import notify_task_failure, notify_terminal_failure_
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)  # Only log errors for Celery tasks
+
+
+def _store_error_log(job_id: str, capture) -> None:
+    """Save captured log text to DB for a failed job. Silently ignores errors."""
+    try:
+        log_text = capture.getvalue()
+        if log_text:
+            save_job_error_log(job_id, log_text)
+    except Exception:
+        pass
 
 
 def _sync_user_job_counts(job_id: str, status: str) -> None:
@@ -343,6 +355,8 @@ def optimize_resume_task(self, job_id: str):
     job_for_filename = None
     _task_start = 0.0
     _terminal_status = None
+    _cap_ctx = capture_task_logs()
+    _capture = _cap_ctx.__enter__()
     try:
         job = get_job(job_id)
         if not job:
@@ -479,6 +493,7 @@ def optimize_resume_task(self, job_id: str):
                 llm_estimated_cost_usd=db_payload.get("llm_estimated_cost_usd"),
             )
             _sync_user_job_counts(job_id, "failed")
+            _store_error_log(job_id, _capture)
             logger.error(f"[optimize_resume_task] Job {job_id} failed: {result.error_message}")
             try:
                 notify_terminal_failure_once(
@@ -533,6 +548,7 @@ def optimize_resume_task(self, job_id: str):
             result=result_data,
         )
         _sync_user_job_counts(job_id, "failed")
+        _store_error_log(job_id, _capture)
         try:
             notify_terminal_failure_once(
                 get_redis_client(),
@@ -563,6 +579,7 @@ def optimize_resume_task(self, job_id: str):
             result=_build_default_failure_result(job),
         )
         _sync_user_job_counts(job_id, "failed")
+        _store_error_log(job_id, _capture)
         try:
             notify_terminal_failure_once(
                 get_redis_client(),
@@ -579,6 +596,7 @@ def optimize_resume_task(self, job_id: str):
         _terminal_status = "failed"
         raise
     finally:
+        _cap_ctx.__exit__(None, None, None)
         if debug_enabled() and _task_start > 0:
             debug_log(
                 logger,

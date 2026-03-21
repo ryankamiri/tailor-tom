@@ -29,6 +29,7 @@ from api.job_repository import (
     get_job_status_by_id as repo_get_job_status_by_id,
     list_processing_jobs_for_recovery,
     list_stuck_pending_jobs_for_recovery,
+    save_job_error_log as repo_save_job_error_log,
     serialize_job_for_detail,
     update_job_status as repo_update_job_status,
 )
@@ -229,5 +230,21 @@ def get_job_stats() -> dict[str, int]:
     db = SessionLocal()
     try:
         return get_global_stats(db)
+    finally:
+        db.close()
+
+
+def save_job_error_log(job_id: str, log_text: str) -> None:
+    """Persist captured error log for a failed job and invalidate the job cache. Silent no-op on any error."""
+    db = SessionLocal()
+    try:
+        job = get_job_by_id(db, job_id)
+        if not job:
+            return
+        repo_save_job_error_log(db, job_id, log_text)
+        db.commit()
+        on_job_write_invalidate(str(job.user_id), job_id)
+    except Exception:
+        pass
     finally:
         db.close()

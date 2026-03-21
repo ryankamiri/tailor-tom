@@ -91,6 +91,8 @@ export interface JobStatus {
   analysis?: JobDetailAnalysis | null;
   /** True when stored analysis could not be parsed. */
   analysis_parse_failed?: boolean;
+  /** Full optimizer debug log captured on failure (admin only). */
+  error_log?: string | null;
 }
 
 /** One item in GET /api/jobs list (cursor-paginated). */

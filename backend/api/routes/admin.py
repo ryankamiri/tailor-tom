@@ -287,6 +287,7 @@ async def get_admin_user_job_detail(
         "created_at": envelope["created_at"],
         "completed_at": envelope.get("completed_at"),
         "error_message": envelope.get("error_message"),
+        "error_log": envelope.get("error_log"),
         "company_name": envelope.get("company_name"),
         "result": envelope.get("result"),
         "original_latex": envelope.get("original_latex"),

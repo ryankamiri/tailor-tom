@@ -20,7 +20,7 @@ USER_PROFILE_CACHE_TTL_SECONDS = 10 * 60
 ADMIN_USER_COSTS_CACHE_TTL_SECONDS = 900  # 15 min
 
 # Canonical job envelope: all readers (user detail, admin detail, worker) use this shape.
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 JOB_ENVELOPE_KEY_PREFIX = "cache:job:"
 
 

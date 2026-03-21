@@ -134,6 +134,7 @@ class Job(Base):
         DateTime(timezone=True), nullable=True
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_log: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Input data (stored so we can replay / audit)
     original_latex: Mapped[str] = mapped_column(Text, nullable=False)

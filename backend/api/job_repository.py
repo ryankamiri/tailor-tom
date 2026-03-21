@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 from uuid import UUID
 
-from sqlalchemy import case, Integer, tuple_, func, or_
+from sqlalchemy import case, Integer, tuple_, func, or_, update
 from sqlalchemy.orm import Session
 
 from api.cache import CACHE_SCHEMA_VERSION, get_job_envelope_cache, set_job_envelope_cache
@@ -101,6 +101,7 @@ def build_job_envelope(job: Job) -> dict[str, Any]:
         else ""
     )
     envelope["analysis_json"] = job.analysis_json
+    envelope["error_log"] = job.error_log
     envelope["cache_schema_version"] = CACHE_SCHEMA_VERSION
     envelope["cached_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     if envelope.get("result") is None and job.optimized_latex:
@@ -297,6 +298,17 @@ def get_job_for_admin_user(db: Session, job_id: str, user_id: UUID) -> Job | Non
     )
 
 
+def get_job_error_log(db: Session, job_id: str) -> str | None:
+    """Return the error_log text for a job, or None if not set."""
+    row = db.query(Job.error_log).filter(Job.id == job_id).first()
+    return row.error_log if row else None
+
+
+def get_job_by_id_for_admin(db: Session, job_id: str) -> Job | None:
+    """Admin: fetch a job by ID with no user restriction."""
+    return db.query(Job).filter(Job.id == job_id).first()
+
+
 def list_processing_jobs_for_recovery(db: Session) -> list[Job]:
     return db.query(Job).filter(Job.status == "processing").all()
 
@@ -373,6 +385,13 @@ def update_job_status(
             stats.failed += 1
         else:
             stats.cancelled += 1
+
+
+def save_job_error_log(db: Session, job_id: str, log_text: str) -> None:
+    """Persist captured error log for a failed job (200 KB cap). Call before db.commit()."""
+    db.execute(
+        update(Job).where(Job.id == job_id).values(error_log=log_text[:200_000])
+    )
 
 
 def get_global_stats(db: Session) -> dict[str, int]:
