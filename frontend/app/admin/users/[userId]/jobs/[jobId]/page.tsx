@@ -141,6 +141,42 @@ function AdminJobDetailContent() {
           <p className="text-muted-foreground mt-2">{jobStatus.company_name || 'Optimization Job'}</p>
         </div>
         <div className="flex items-center gap-3">
+          {jobStatus.job_description && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                navigator.clipboard.writeText(jobStatus.job_description!);
+                toast.success('Job description copied');
+              }}
+            >
+              Copy Job Description
+            </Button>
+          )}
+          {originalLatex && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                navigator.clipboard.writeText(originalLatex);
+                toast.success('Original LaTeX copied');
+              }}
+            >
+              Copy Original LaTeX
+            </Button>
+          )}
+          {optimizedLatex && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                navigator.clipboard.writeText(optimizedLatex);
+                toast.success('Optimized LaTeX copied');
+              }}
+            >
+              Copy Optimized LaTeX
+            </Button>
+          )}
           {optimizedLatex && (
             <Button onClick={handleDownload} disabled={isDownloading} variant="default" className="gap-2">
               <Download className="h-4 w-4" />

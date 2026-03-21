@@ -93,6 +93,8 @@ export interface JobStatus {
   analysis_parse_failed?: boolean;
   /** Full optimizer debug log captured on failure (admin only). */
   error_log?: string | null;
+  /** Job description used for this optimization (detail only). */
+  job_description?: string | null;
 }
 
 /** One item in GET /api/jobs list (cursor-paginated). */
