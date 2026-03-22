@@ -15,6 +15,16 @@ class TokenUsage:
 
 
 @dataclass
+class LLMErrorInfo:
+    """Structured LLM/provider error information for user-facing failure handling."""
+
+    code: str
+    message: str
+    stage: str
+    raw_error: str = ""
+
+
+@dataclass
 class V3OptimizationResult:
     """Result of V3 optimize_resume_v3."""
 

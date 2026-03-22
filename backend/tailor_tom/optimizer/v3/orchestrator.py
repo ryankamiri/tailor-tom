@@ -5,6 +5,7 @@ from typing import Optional
 
 from tailor_tom.optimizer.v3.types import V3OptimizationResult, TokenUsage
 from tailor_tom.optimizer.v3.llm_usage import merge_usage, usage_from_counts
+from tailor_tom.optimizer.v3.llm_errors import ERROR_INVALID_API_KEY
 from tailor_tom.optimizer.v3.stage0_preprocess import run_stage0, Stage0Result
 from tailor_tom.optimizer.v3.stage1_generator import generate_candidates, GeneratedCandidate
 from tailor_tom.optimizer.v3.stage2_validation import run_feasibility, FeasibilityResult
@@ -206,13 +207,32 @@ def optimize_resume_v3(
 
         gen_bullets = bullets if iteration == 0 else [b for b in bullets if b.bullet_id in bullets_with_zero]
 
-        new_candidates, usage = generate_candidates(
+        new_candidates, usage, llm_error = generate_candidates(
             gen_bullets,
             job_description,
             failed_feedback=failed_feedback if iteration > 0 else None,
             iteration=iteration,
         )
         token_usage_acc = merge_usage(token_usage_acc, usage)
+        if llm_error is not None:
+            diagnostics["llm_error"] = {
+                "code": llm_error.code,
+                "message": llm_error.message,
+                "stage": llm_error.stage,
+                "raw_error": llm_error.raw_error,
+            }
+            diagnostics["llm_error_code"] = llm_error.code
+            if llm_error.code == ERROR_INVALID_API_KEY:
+                return V3OptimizationResult(
+                    success=False,
+                    error_message=llm_error.message,
+                    optimized_latex=original_latex,
+                    pdf_bytes=compile_result.pdf_bytes if compile_result else None,
+                    page_count=compile_result.page_count if compile_result else 0,
+                    passes_done=used_iterations,
+                    token_usage=token_usage_acc,
+                    diagnostics=diagnostics,
+                )
         all_candidates.extend(new_candidates)
 
         feas = run_feasibility(original_latex, bullets, new_candidates)
@@ -265,13 +285,31 @@ def optimize_resume_v3(
         opts = [oid for oid in feasible_option_ids if oid == f"b{b.bullet_id}_orig" or (oid.startswith(f"b{b.bullet_id}_") and oid != f"b{b.bullet_id}_orig")]
         options_per_bullet[b.bullet_id] = sorted(opts)
 
-    chooser_result = run_chooser(
+    chooser_result, chooser_error = run_chooser(
         original_latex,
         bullets,
         options_per_bullet,
         option_id_to_latex,
         job_description,
     )
+    if chooser_error is not None:
+        diagnostics["llm_error"] = {
+            "code": chooser_error.code,
+            "message": chooser_error.message,
+            "stage": chooser_error.stage,
+            "raw_error": chooser_error.raw_error,
+        }
+        diagnostics["llm_error_code"] = chooser_error.code
+        return V3OptimizationResult(
+            success=False,
+            error_message=chooser_error.message,
+            optimized_latex=original_latex,
+            pdf_bytes=compile_result.pdf_bytes if compile_result else None,
+            page_count=compile_result.page_count if compile_result else 0,
+            passes_done=used_iterations,
+            token_usage=token_usage_acc,
+            diagnostics=diagnostics,
+        )
     if not chooser_result:
         return V3OptimizationResult(
             success=False,

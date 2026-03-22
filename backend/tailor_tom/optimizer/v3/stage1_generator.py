@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 from tailor_tom.config import settings
 from tailor_tom.optimizer.v3.stage0_preprocess import BulletConstraint, _strip_latex_commands
 from tailor_tom.optimizer.v3.llm_usage import TokenUsage, merge_usage, usage_from_counts
+from tailor_tom.optimizer.v3.llm_errors import classify_llm_exception
+from tailor_tom.optimizer.v3.types import LLMErrorInfo
 from tailor_tom.optimizer.v3.usage_extractor import resolve_usage
 from tailor_tom.optimizer.v3.debug_logging import debug_enabled, debug_log
 
@@ -124,7 +126,7 @@ def generate_candidates(
     job_description: str,
     failed_feedback: Optional[dict[int, str]] = None,
     iteration: int = 0,
-) -> tuple[list[GeneratedCandidate], TokenUsage]:
+) -> tuple[list[GeneratedCandidate], TokenUsage, Optional[LLMErrorInfo]]:
     """Generate n candidates per bullet. Returns (candidates with option_id, usage).
     Candidate IDs: b{bullet_id}_c{candidate_index}_it{iteration}.
     """
@@ -165,7 +167,7 @@ def generate_candidates(
             raw = []
     except Exception as e:
         logger.warning("Stage1 generation failed: %s", e)
-        return [], resolve_usage(None, prompt_len, 0)
+        return [], resolve_usage(None, prompt_len, 0), classify_llm_exception(e, stage="stage1_generation")
 
     out: list[GeneratedCandidate] = []
     seen: set[tuple[int, int]] = set()
@@ -221,4 +223,4 @@ def generate_candidates(
             bullet_ids=[b.bullet_id for b in bullets],
             usage_source=usage.usage_source,
         )
-    return out, usage
+    return out, usage, None

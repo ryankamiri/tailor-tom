@@ -5,12 +5,13 @@ import { useParams, useRouter } from 'next/navigation';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import { getJobStatus, getJobLatex, JobStatus, compileLatexToPdf } from '@/lib/api';
+import { getJobStatus, getJobLatex, createOptimizationJob, JobStatus, compileLatexToPdf } from '@/lib/api';
 import { showJobCompleteNotification, showJobFailedNotification } from '@/lib/notifications';
 import { JobStatusBadge } from '@/components/jobs/job-status-badge';
 import { JobStatusView } from '@/components/jobs/job-status-view';
 import { JobResultsView } from '@/components/jobs/job-results-view';
 import { RequireAuth } from '@/components/layout/require-auth';
+import { useAuth } from '@/contexts/auth-context';
 import { toast } from 'sonner';
 import { Download } from 'lucide-react';
 
@@ -19,11 +20,14 @@ function JobDetailsContent() {
   const router = useRouter();
   const jobId = params.jobId as string;
 
+  const { user } = useAuth();
+
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const [originalLatex, setOriginalLatex] = useState<string>('');
   const [optimizedLatex, setOptimizedLatex] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
 
   const loadJobResults = useCallback(async (status: JobStatus) => {
     try {
@@ -152,6 +156,31 @@ function JobDetailsContent() {
     }
   };
 
+  const handleRetry = async () => {
+    if (!user?.resume_latex) {
+      toast.error('No resume on file. Please upload a resume in Settings first.');
+      return;
+    }
+    setIsRetrying(true);
+    try {
+      await createOptimizationJob({
+        resume_latex: user.resume_latex,
+        job_description: jobStatus!.job_description!,
+        target_pages: user.target_pages ?? 1,
+        max_iterations: user.max_iterations ?? 3,
+        first_name: user.first_name ?? '',
+        last_name: user.last_name ?? '',
+        company_name: jobStatus!.company_name ?? '',
+      });
+      toast.success('Job retried — check your jobs list.');
+      router.push('/jobs');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to retry job');
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
   return (
     <div className="container mx-auto py-8 max-w-6xl space-y-6">
       <div className="flex items-center justify-between">
@@ -160,6 +189,16 @@ function JobDetailsContent() {
           <p className="text-muted-foreground mt-2">{jobStatus.company_name || 'Optimization Job'}</p>
         </div>
         <div className="flex items-center gap-3">
+          {['failed', 'completed', 'cancelled'].includes(jobStatus.status) && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isRetrying || !user?.resume_latex}
+              onClick={handleRetry}
+            >
+              {isRetrying ? 'Retrying…' : 'Retry'}
+            </Button>
+          )}
           {jobStatus.job_description && (
             <Button
               variant="outline"

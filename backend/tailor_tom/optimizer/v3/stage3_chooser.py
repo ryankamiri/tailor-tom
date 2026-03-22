@@ -14,7 +14,9 @@ from tailor_tom.layout_analyzer import check_quality, extract_items_from_latex
 from tailor_tom.config import settings
 
 from tailor_tom.optimizer.v3.stage0_preprocess import BulletConstraint, _strip_latex_commands, replace_nth
+from tailor_tom.optimizer.v3.llm_errors import classify_llm_exception
 from tailor_tom.optimizer.v3.llm_usage import TokenUsage, usage_from_counts
+from tailor_tom.optimizer.v3.types import LLMErrorInfo
 from tailor_tom.optimizer.v3.usage_extractor import resolve_usage
 from tailor_tom.optimizer.v3.debug_logging import debug_enabled, debug_log
 
@@ -337,7 +339,7 @@ def run_chooser(
     options_per_bullet: dict[int, list[str]],
     option_id_to_latex: dict[str, str],
     job_description: str,
-) -> Optional[ChooserResult]:
+) -> tuple[Optional[ChooserResult], Optional[LLMErrorInfo]]:
     """Run DSPy chooser. Returns ChooserResult or None on failure."""
     options_str = _format_options_for_chooser(bullets, options_per_bullet, option_id_to_latex)
     resume_context = _format_resume_context_for_chooser(bullets)
@@ -365,7 +367,7 @@ def run_chooser(
             raw = []
     except Exception as e:
         logger.warning("Stage3 chooser failed: %s", e)
-        return None
+        return None, classify_llm_exception(e, stage="stage3_chooser")
 
     valid_option_ids = set(option_id_to_latex.keys())
     choices_dict: dict[int, str] = {}
@@ -447,14 +449,17 @@ def run_chooser(
             min_changed_target=min_changed_target,
             usage_source=usage.usage_source,
         )
-    return ChooserResult(
-        choices=choices_dict,
-        usage=usage,
-        missing_filled_bullet_ids=missing_filled,
-        missing_filled_count=len(missing_filled),
-        invalid_cross_bullet_choice_count=invalid_cross_bullet_choice_count,
-        forced_changed_bullet_ids=forced_changed,
-        min_changed_target=min_changed_target,
+    return (
+        ChooserResult(
+            choices=choices_dict,
+            usage=usage,
+            missing_filled_bullet_ids=missing_filled,
+            missing_filled_count=len(missing_filled),
+            invalid_cross_bullet_choice_count=invalid_cross_bullet_choice_count,
+            forced_changed_bullet_ids=forced_changed,
+            min_changed_target=min_changed_target,
+        ),
+        None,
     )
 
 
