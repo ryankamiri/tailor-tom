@@ -6,6 +6,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { getJobStatus, getJobLatex, createOptimizationJob, JobStatus, compileLatexToPdf } from '@/lib/api';
+import { type TargetPages } from '@/lib/constants';
 import { showJobCompleteNotification, showJobFailedNotification } from '@/lib/notifications';
 import { JobStatusBadge } from '@/components/jobs/job-status-badge';
 import { JobStatusView } from '@/components/jobs/job-status-view';
@@ -166,7 +167,7 @@ function JobDetailsContent() {
       await createOptimizationJob({
         resume_latex: user.resume_latex,
         job_description: jobStatus!.job_description!,
-        target_pages: user.target_pages ?? 1,
+        target_pages: (user.target_pages ?? 1) as TargetPages,
         max_iterations: user.max_iterations ?? 3,
         first_name: user.first_name ?? '',
         last_name: user.last_name ?? '',
