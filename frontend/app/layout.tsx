@@ -7,6 +7,7 @@ import { Navbar } from "@/components/layout/navbar";
 import { SiteAnnouncementBanner } from "@/components/layout/site-announcement-banner";
 import { JobPollingProvider } from "@/components/jobs/job-polling-provider";
 import { AuthProvider } from "@/contexts/auth-context";
+import { OnboardingProvider } from "@/contexts/onboarding-context";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -35,13 +36,15 @@ export default function RootLayout({
       >
         <ThemeProvider>
           <AuthProvider>
-            <JobPollingProvider />
-            <SiteAnnouncementBanner />
-            <div className="pt-14">
-              <Navbar />
-              {children}
-            </div>
-            <Toaster />
+            <OnboardingProvider>
+              <JobPollingProvider />
+              <SiteAnnouncementBanner />
+              <div className="pt-14">
+                <Navbar />
+                {children}
+              </div>
+              <Toaster />
+            </OnboardingProvider>
           </AuthProvider>
         </ThemeProvider>
       </body>

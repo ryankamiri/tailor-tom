@@ -8,6 +8,7 @@ import { Moon, Sun, LogOut } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { useEffect, useState, useTransition } from 'react';
 import { useAuth } from '@/contexts/auth-context';
+import { useOnboarding } from '@/contexts/onboarding-context';
 
 export function Navbar() {
   const pathname = usePathname();
@@ -15,6 +16,8 @@ export function Navbar() {
   const [mounted, setMounted] = useState(false);
   const [, startTransition] = useTransition();
   const { user, isAuthenticated, loading, logout } = useAuth();
+  const { state: onboarding } = useOnboarding();
+  const showNewJobDot = onboarding.resumeSaved && !onboarding.firstJobCreated && !onboarding.completed;
 
   // Standard next-themes pattern: set mounted after client-side hydration
   useEffect(() => {
@@ -53,13 +56,19 @@ export function Navbar() {
               <Link
                 key={link.href}
                 href={link.href}
-                className={`text-sm font-medium transition-colors hover:text-primary ${
+                className={`relative text-sm font-medium transition-colors hover:text-primary ${
                   pathname === link.href
                     ? 'text-foreground'
                     : 'text-muted-foreground'
                 }`}
               >
                 {link.label}
+                {showNewJobDot && link.href === '/jobs/new' && (
+                  <span className="absolute -top-1 -right-2.5 flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
+                  </span>
+                )}
               </Link>
             ))}
           </div>

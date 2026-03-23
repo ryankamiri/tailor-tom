@@ -11,10 +11,16 @@ import { TARGET_PAGES_OPTIONS, parseTargetPages } from '@/lib/constants';
 import { toast } from 'sonner';
 import { Loader2, FileUp, HelpCircle } from 'lucide-react';
 import { DocxUploadDialog } from '@/components/settings/docx-upload-dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { useAuth } from '@/contexts/auth-context';
+import { useOnboarding } from '@/contexts/onboarding-context';
+import { useRouter } from 'next/navigation';
 
 export function SettingsForm() {
+  const router = useRouter();
   const { user, setUserFromProfile } = useAuth();
+  const { state: onboarding, markStep } = useOnboarding();
+  const [showOnboardingDialog, setShowOnboardingDialog] = useState(false);
 
   // Local form state — initialised from user profile once loaded
   const [targetPages, setTargetPages] = useState(user?.target_pages ?? 1);
@@ -125,6 +131,12 @@ export function SettingsForm() {
       setUserFromProfile(updated);
 
       toast.success('LaTeX template saved successfully!');
+
+      // Show onboarding dialog prompting user to create their first job
+      if (!onboarding.resumeSaved) {
+        markStep('resumeSaved');
+        setShowOnboardingDialog(true);
+      }
 
       // Compile and show PDF preview after successful save
       if (latex.trim()) {
@@ -268,8 +280,32 @@ export function SettingsForm() {
           }
           compileAndSetPdf(generatedLatex);
           toast.success('Resume loaded and saved.');
+
+          if (!onboarding.resumeSaved) {
+            markStep('resumeSaved');
+            setShowOnboardingDialog(true);
+          }
         }}
       />
+
+      <Dialog open={showOnboardingDialog} onOpenChange={setShowOnboardingDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Resume saved!</DialogTitle>
+            <DialogDescription>
+              You&apos;re all set to optimize your first resume. Head to New Job, paste a job description, and TailorTom will tailor your resume to match.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setShowOnboardingDialog(false)}>
+              Stay on Settings
+            </Button>
+            <Button onClick={() => { setShowOnboardingDialog(false); router.push('/jobs/new'); }}>
+              Go to New Job
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

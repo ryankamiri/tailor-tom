@@ -16,7 +16,7 @@ export const SITE_ANNOUNCEMENTS: SiteAnnouncement[] = [
       'Create an account with Google and try our improved optimizer with DOCX compatibility.',
     ctaLabel: 'Try V2',
     ctaHref: '/login',
-    enabled: true,
+    enabled: false,
   },
 ];
 

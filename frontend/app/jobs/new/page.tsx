@@ -12,11 +12,13 @@ import { DailyLimitBadge } from '@/components/jobs/daily-limit-badge';
 import { AlertCircle } from 'lucide-react';
 import { RequireAuth } from '@/components/layout/require-auth';
 import { useAuth } from '@/contexts/auth-context';
+import { useOnboarding } from '@/contexts/onboarding-context';
 import { parseTargetPages } from '@/lib/constants';
 
 function NewJobContent() {
   const router = useRouter();
   const { user, refreshUser } = useAuth();
+  const { state: onboarding, markStep } = useOnboarding();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,6 +71,11 @@ function NewJobContent() {
       });
 
       await refreshUser();
+
+      if (!onboarding.firstJobCreated) {
+        markStep('firstJobCreated');
+      }
+
       toast.success('Optimization job created successfully!');
       router.push('/jobs');
     } catch (err) {

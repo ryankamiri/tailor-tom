@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/auth-context';
+import { fetchMe } from '@/lib/api';
 import { Loader2 } from 'lucide-react';
 
 /**
@@ -38,7 +39,16 @@ export default function AuthCallbackPage() {
     // Clear tokens from the URL to prevent leaking them in browser history
     window.history.replaceState(null, '', '/auth/callback');
 
-    login(accessToken, refreshToken).then(() => {
+    login(accessToken, refreshToken).then(async () => {
+      try {
+        const profile = await fetchMe();
+        if (!profile.resume_latex) {
+          router.replace('/settings');
+          return;
+        }
+      } catch {
+        // If profile fetch fails, just go home
+      }
       router.replace('/');
     });
   }, [login, router]);
