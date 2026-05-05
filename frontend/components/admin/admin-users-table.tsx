@@ -70,6 +70,7 @@ export function AdminUsersTable({
               <th className="px-2 py-2 text-center font-medium border-b">Resume</th>
               <th className="px-2 py-2 text-center font-medium border-b">Active</th>
               <th className="px-2 py-2 text-center font-medium border-b">Quota used</th>
+              <SortableTh {...thProps} label="Joined" field="created_at" />
               <SortableTh {...thProps} label="Month cost" field="month_cost_usd" align="right" />
               <SortableTh {...thProps} label="Lifetime cost" field="total_cost_usd" align="right" />
               <th className="px-2 py-2 text-right font-medium border-b">Completed</th>
@@ -81,7 +82,7 @@ export function AdminUsersTable({
           <tbody>
             {users.length === 0 ? (
               <tr>
-                <td colSpan={11} className="text-center text-muted-foreground py-8 px-2">
+                <td colSpan={12} className="text-center text-muted-foreground py-8 px-2">
                   No users match the current filters.
                 </td>
               </tr>
@@ -114,6 +115,9 @@ export function AdminUsersTable({
                   </td>
                   <td className="px-2 py-2 text-center">{row.active_jobs_count}</td>
                   <td className="px-2 py-2 text-center">{row.daily_quota_used}</td>
+                  <td className="px-2 py-2 text-muted-foreground">
+                    {row.created_at ? formatLocalDateSafe(row.created_at, '—') : '—'}
+                  </td>
                   <td className="px-2 py-2 text-right">{formatUsdCompact(row.month_cost_usd)}</td>
                   <td className="px-2 py-2 text-right">{formatUsdCompact(row.total_cost_usd)}</td>
                   <td className="px-2 py-2 text-right">{row.completed_count}</td>

@@ -131,6 +131,19 @@ export interface AdminAllJobsResponse {
   next_cursor: string | null;
 }
 
+/** Admin: DOCX conversion debug payload. */
+export interface AdminConversionDebugResponse {
+  conversion_id: string;
+  status: string;
+  task_name: string | null;
+  queue: string | null;
+  status_source: string | null;
+  error_message: string | null;
+  traceback: string | null;
+  failed_at: string | null;
+  detail_available: boolean;
+}
+
 export interface DiffItemChange {
   type: 'removed' | 'added' | 'unchanged';
   text: string;
@@ -437,6 +450,21 @@ export async function getAdminUserJobLatex(userId: string, jobId: string): Promi
   return res.json();
 }
 
+/**
+ * Get admin-only DOCX conversion debug details, including stored traceback.
+ */
+export async function getAdminConversionDebug(
+  conversionId: string
+): Promise<AdminConversionDebugResponse> {
+  const res = await authFetch(`${API_BASE}/api/admin/conversions/${encodeURIComponent(conversionId)}`);
+  await assertOkOrThrow(res, {
+    fallback: 'Failed to get conversion debug details',
+    adminForbidden: true,
+    notFound: true,
+  });
+  return res.json();
+}
+
 // ---------------------------------------------------------------------------
 // Public endpoints (no auth required)
 // ---------------------------------------------------------------------------
@@ -548,6 +576,7 @@ export interface AdminUserRow {
   email: string;
   first_name: string;
   last_name: string;
+  created_at: string | null;
   is_admin: boolean;
   has_resume: boolean;
   active_jobs_count: number;

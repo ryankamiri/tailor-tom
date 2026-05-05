@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 
 from billiard.exceptions import TimeLimitExceeded
@@ -16,6 +17,8 @@ from celery.signals import worker_ready, task_failure
 
 from worker.celery_app import celery_app
 from api.conversion_storage import (
+    CONVERSION_DEBUG_KEY_PREFIX,
+    CONVERSION_DEBUG_TTL,
     CONVERSION_KEY_PREFIX,
     CONVERSION_TTL,
     get_redis_client as get_convert_redis,
@@ -674,7 +677,29 @@ def convert_docx_task(self, conversion_id: str):
         rc.setex(key, CONVERSION_TTL, json.dumps(result))
 
     except Exception as exc:
+        traceback_text = traceback.format_exc()
+        failed_at = datetime.now(timezone.utc).isoformat()
+        admin_url = f"{settings.frontend_url.rstrip('/')}/admin/conversions/{conversion_id}"
         logger.exception("[convert_docx_task] Conversion %s failed: %s", conversion_id, exc)
+        try:
+            debug_result = {
+                "conversion_id": str(conversion_id),
+                "status": "failed",
+                "task_name": "convert_docx_task",
+                "task_id": getattr(getattr(self, "request", None), "id", None),
+                "queue": "docx",
+                "status_source": "exception",
+                "error_message": str(exc),
+                "traceback": traceback_text,
+                "failed_at": failed_at,
+            }
+            rc.setex(
+                f"{CONVERSION_DEBUG_KEY_PREFIX}{conversion_id}",
+                CONVERSION_DEBUG_TTL,
+                json.dumps(debug_result),
+            )
+        except Exception:
+            pass
         try:
             notify_terminal_failure_once(
                 rc,
@@ -684,6 +709,7 @@ def convert_docx_task(self, conversion_id: str):
                 error_message=str(exc),
                 queue="docx",
                 status_source="exception",
+                admin_url=admin_url,
             )
         except Exception:
             pass

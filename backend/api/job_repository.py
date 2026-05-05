@@ -906,6 +906,8 @@ def get_admin_users(
         sort_column = User.email
     elif sort == "last_name":
         sort_column = User.last_name
+    elif sort == "created_at":
+        sort_column = User.created_at
     elif sort == "last_job_at":
         sort_column = job_stats_subq.c.last_job_at
     elif sort == "month_cost_usd":
@@ -941,6 +943,7 @@ def get_admin_users(
             "email": u.email or "",
             "first_name": u.first_name or "",
             "last_name": u.last_name or "",
+            "created_at": _dt_to_iso(u.created_at) if u.created_at else None,
             "is_admin": bool(u.is_admin),
             "has_resume": u.resume_latex is not None,
             "active_jobs_count": int(u.active_jobs_count or 0),

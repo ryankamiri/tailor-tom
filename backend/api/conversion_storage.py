@@ -8,6 +8,9 @@ from tailor_tom.config import settings
 
 CONVERSION_KEY_PREFIX = "conversion:"
 CONVERSION_TTL = 3600  # 1 hour
+CONVERSION_DEBUG_KEY_PREFIX = "conversion:debug:"
+CONVERSION_DEBUG_TTL_DAYS = 30
+CONVERSION_DEBUG_TTL = CONVERSION_DEBUG_TTL_DAYS * 24 * 3600
 
 _redis_client: Optional[redis.Redis] = None
 

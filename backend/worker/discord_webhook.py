@@ -73,6 +73,7 @@ def notify_terminal_failure_once(
     company_name: Optional[str] = None,
     passes_done: Optional[int] = None,
     status_source: Optional[str] = None,
+    admin_url: Optional[str] = None,
 ) -> None:
     """Send at most one Discord alert per entity (job or conversion) for terminal failures.
 
@@ -124,6 +125,12 @@ def notify_terminal_failure_once(
         fields.append({"name": _truncate("Passes", DISCORD_EMBED_FIELD_NAME_MAX), "value": str(passes_done), "inline": True})
     if status_source:
         fields.append({"name": _truncate("Status source", DISCORD_EMBED_FIELD_NAME_MAX), "value": _truncate(status_source, DISCORD_EMBED_FIELD_VALUE_MAX), "inline": True})
+    if admin_url:
+        fields.append({
+            "name": _truncate("Admin trace", DISCORD_EMBED_FIELD_NAME_MAX),
+            "value": _truncate(f"[View full stack trace]({admin_url})", DISCORD_EMBED_FIELD_VALUE_MAX),
+            "inline": False,
+        })
     embed = {
         "title": title,
         "description": description,

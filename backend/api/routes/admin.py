@@ -4,6 +4,7 @@ All routes require a valid JWT from a user with ``is_admin = True``.
 Resumes are stored in the ``users`` table (``resume_latex`` column).
 """
 
+import json
 import logging
 import re
 from uuid import UUID
@@ -22,6 +23,11 @@ from api.cache import (
 from api.database import get_db
 from api.db_models import User
 from api.deps import CurrentUserIdentity, require_admin
+from api.conversion_storage import (
+    CONVERSION_DEBUG_KEY_PREFIX,
+    CONVERSION_KEY_PREFIX,
+    get_redis_client as get_conversion_redis,
+)
 from api.job_repository import (
     get_admin_user_costs,
     get_admin_user_summary,
@@ -54,6 +60,13 @@ def _resume_filename(user: User) -> str:
     return f"{first}_{last}_{short_id}_resume"
 
 
+def _validate_conversion_id(conversion_id: str) -> str:
+    """Validate generated DOCX conversion IDs before reading Redis."""
+    if not re.fullmatch(r"[a-fA-F0-9]{16}", conversion_id):
+        raise HTTPException(status_code=422, detail="Invalid conversion_id")
+    return conversion_id.lower()
+
+
 # ---------------------------------------------------------------------------
 # Stats
 # ---------------------------------------------------------------------------
@@ -77,7 +90,7 @@ async def list_admin_users(
     search: str | None = Query(default=None, description="Search by name or email"),
     year: int | None = Query(default=None, description="UTC year for cost month"),
     month: int | None = Query(default=None, ge=1, le=12, description="UTC month 1-12"),
-    sort: str = Query(default="email", description="Sort field: email, last_name, last_job_at, month_cost_usd, total_cost_usd, completed_count"),
+    sort: str = Query(default="email", description="Sort field: email, last_name, created_at, last_job_at, month_cost_usd, total_cost_usd, completed_count"),
     order: str = Query(default="asc", description="Sort order: asc, desc"),
     has_resume: bool | None = Query(default=None, description="Filter by has resume"),
     active_only: bool = Query(default=False, description="Only users with active_jobs_count > 0"),
@@ -140,6 +153,57 @@ async def get_v3_health(
     except Exception as e:
         logger.exception("Failed to get V3 health: %s", e)
         raise HTTPException(status_code=500, detail="Failed to get V3 health")
+
+
+@router.get("/admin/conversions/{conversion_id}")
+async def get_admin_conversion_debug(
+    conversion_id: str,
+    identity: CurrentUserIdentity = Depends(require_admin),
+):
+    """Get admin-only debug details for a DOCX conversion failure."""
+    cid = _validate_conversion_id(conversion_id)
+    rc = get_conversion_redis()
+
+    debug_raw = rc.get(f"{CONVERSION_DEBUG_KEY_PREFIX}{cid}")
+    if debug_raw:
+        try:
+            debug_data = json.loads(debug_raw)
+        except json.JSONDecodeError as e:
+            logger.exception("Failed to parse conversion debug payload: %s", e)
+            raise HTTPException(status_code=500, detail="Failed to load conversion debug data")
+        return {
+            "conversion_id": cid,
+            "status": debug_data.get("status", "failed"),
+            "task_name": debug_data.get("task_name"),
+            "queue": debug_data.get("queue"),
+            "status_source": debug_data.get("status_source"),
+            "error_message": debug_data.get("error_message"),
+            "traceback": debug_data.get("traceback"),
+            "failed_at": debug_data.get("failed_at"),
+            "detail_available": bool(debug_data.get("traceback")),
+        }
+
+    public_raw = rc.get(f"{CONVERSION_KEY_PREFIX}{cid}")
+    if not public_raw:
+        raise HTTPException(status_code=404, detail="Conversion not found or expired")
+
+    try:
+        public_data = json.loads(public_raw)
+    except json.JSONDecodeError as e:
+        logger.exception("Failed to parse conversion payload: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to load conversion data")
+
+    return {
+        "conversion_id": cid,
+        "status": public_data.get("status", "unknown"),
+        "task_name": None,
+        "queue": None,
+        "status_source": None,
+        "error_message": public_data.get("error_message"),
+        "traceback": None,
+        "failed_at": None,
+        "detail_available": False,
+    }
 
 
 @router.get("/admin/user-costs")
@@ -394,5 +458,3 @@ async def get_resume_detail(
         "filename": _resume_filename(user) + ".pdf",
         "created_at": user.created_at.isoformat() if user.created_at else None,
     }
-
-
