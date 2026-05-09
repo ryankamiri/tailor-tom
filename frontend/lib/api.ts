@@ -141,6 +141,11 @@ export interface AdminConversionDebugResponse {
   error_message: string | null;
   traceback: string | null;
   failed_at: string | null;
+  user_id: string | null;
+  user_email: string | null;
+  user_first_name: string | null;
+  user_last_name: string | null;
+  debug_context: Record<string, unknown> | null;
   detail_available: boolean;
 }
 
@@ -836,7 +841,7 @@ export async function startDocxConversion(
   formData.append('file', file);
   formData.append('target_pages', targetPages.toString());
 
-  const res = await fetch(`${API_BASE}/api/convert/docx`, {
+  const res = await authFetch(`${API_BASE}/api/convert/docx`, {
     method: 'POST',
     body: formData,
   });

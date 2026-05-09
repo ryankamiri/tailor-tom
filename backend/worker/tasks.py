@@ -682,6 +682,7 @@ def convert_docx_task(self, conversion_id: str):
         admin_url = f"{settings.frontend_url.rstrip('/')}/admin/conversions/{conversion_id}"
         logger.exception("[convert_docx_task] Conversion %s failed: %s", conversion_id, exc)
         try:
+            conversion_debug_context = getattr(exc, "debug_context", None)
             debug_result = {
                 "conversion_id": str(conversion_id),
                 "status": "failed",
@@ -692,6 +693,11 @@ def convert_docx_task(self, conversion_id: str):
                 "error_message": str(exc),
                 "traceback": traceback_text,
                 "failed_at": failed_at,
+                "user_id": data.get("user_id") if isinstance(data, dict) else None,
+                "user_email": data.get("user_email") if isinstance(data, dict) else None,
+                "user_first_name": data.get("user_first_name") if isinstance(data, dict) else None,
+                "user_last_name": data.get("user_last_name") if isinstance(data, dict) else None,
+                "debug_context": conversion_debug_context if isinstance(conversion_debug_context, dict) else None,
             }
             rc.setex(
                 f"{CONVERSION_DEBUG_KEY_PREFIX}{conversion_id}",
@@ -717,6 +723,10 @@ def convert_docx_task(self, conversion_id: str):
             error_result = {
                 "status": "failed",
                 "error_message": str(exc),
+                "user_id": data.get("user_id") if isinstance(data, dict) else None,
+                "user_email": data.get("user_email") if isinstance(data, dict) else None,
+                "user_first_name": data.get("user_first_name") if isinstance(data, dict) else None,
+                "user_last_name": data.get("user_last_name") if isinstance(data, dict) else None,
             }
             rc.setex(key, CONVERSION_TTL, json.dumps(error_result))
         except Exception:

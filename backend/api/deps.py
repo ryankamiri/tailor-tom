@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 # OAuth2 scheme — extracts the token from the Authorization: Bearer <token> header.
 # tokenUrl is a placeholder; the actual login flow is redirect-based (Google OAuth).
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/google", auto_error=True)
+optional_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/google", auto_error=False)
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +65,29 @@ def get_current_user_identity(token: str = Depends(oauth2_scheme)) -> CurrentUse
         raise credentials_exception
 
 
+def get_optional_current_user_identity(
+    token: Optional[str] = Depends(optional_oauth2_scheme),
+) -> Optional[CurrentUserIdentity]:
+    """Best-effort JWT identity for public routes that can attach user context."""
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=["HS256"],
+        )
+        user_id_raw: Optional[str] = payload.get("sub")
+        if not user_id_raw:
+            return None
+        return CurrentUserIdentity(
+            user_id=UUID(user_id_raw),
+            is_admin=bool(payload.get("is_admin", False)),
+        )
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Full user (DB read) — use only when route needs profile, limits, resume, etc.
 # ---------------------------------------------------------------------------
@@ -81,6 +105,16 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+
+def get_optional_current_user(
+    identity: Optional[CurrentUserIdentity] = Depends(get_optional_current_user_identity),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """Best-effort full user lookup for public routes. Invalid/missing auth returns None."""
+    if identity is None:
+        return None
+    return db.query(User).filter(User.id == identity.user_id).first()
 
 
 # ---------------------------------------------------------------------------

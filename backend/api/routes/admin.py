@@ -180,6 +180,11 @@ async def get_admin_conversion_debug(
             "error_message": debug_data.get("error_message"),
             "traceback": debug_data.get("traceback"),
             "failed_at": debug_data.get("failed_at"),
+            "user_id": debug_data.get("user_id"),
+            "user_email": debug_data.get("user_email"),
+            "user_first_name": debug_data.get("user_first_name"),
+            "user_last_name": debug_data.get("user_last_name"),
+            "debug_context": debug_data.get("debug_context"),
             "detail_available": bool(debug_data.get("traceback")),
         }
 
@@ -202,6 +207,11 @@ async def get_admin_conversion_debug(
         "error_message": public_data.get("error_message"),
         "traceback": None,
         "failed_at": None,
+        "user_id": public_data.get("user_id"),
+        "user_email": public_data.get("user_email"),
+        "user_first_name": public_data.get("user_first_name"),
+        "user_last_name": public_data.get("user_last_name"),
+        "debug_context": None,
         "detail_available": False,
     }
 

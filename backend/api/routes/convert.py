@@ -8,9 +8,11 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Form, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
 
 from api.conversion_storage import CONVERSION_KEY_PREFIX, CONVERSION_TTL, get_redis_client
+from api.db_models import User
+from api.deps import get_optional_current_user
 from worker.tasks import convert_docx_task
 from tailor_tom.docx_converter import extract_content_from_docx
 
@@ -30,6 +32,7 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 async def start_docx_conversion(
     file: UploadFile = File(...),
     target_pages: int = Form(1),
+    current_user: User | None = Depends(get_optional_current_user),
 ):
     """Start a DOCX-to-LaTeX conversion job.
 
@@ -71,6 +74,10 @@ async def start_docx_conversion(
         "status": "pending",
         "structured_content": structured_content,
         "target_pages": target_pages,
+        "user_id": str(current_user.id) if current_user else None,
+        "user_email": current_user.email if current_user else None,
+        "user_first_name": current_user.first_name if current_user else None,
+        "user_last_name": current_user.last_name if current_user else None,
     })
     rc.setex(f"{CONVERSION_KEY_PREFIX}{conversion_id}", CONVERSION_TTL, payload)
 

@@ -14,6 +14,7 @@ import io
 import json
 import logging
 import re
+import traceback
 from typing import Any, Optional
 
 from docx import Document
@@ -25,6 +26,36 @@ from tailor_tom.config import settings
 from tailor_tom.resume_renderer import fit_to_pages
 
 logger = logging.getLogger(__name__)
+
+
+class DOCXConversionError(RuntimeError):
+    """DOCX conversion failure with admin-facing debug context."""
+
+    def __init__(self, message: str, debug_context: dict[str, Any]):
+        super().__init__(message)
+        self.debug_context = debug_context
+
+
+def _debug_preview(value: str, max_len: int = 2000) -> str:
+    """Compact preview for admin diagnostics without storing unbounded LLM output."""
+    compact = " ".join((value or "").split())
+    if len(compact) <= max_len:
+        return compact
+    return compact[: max_len - 3] + "..."
+
+
+def _usage_to_debug_dict(usage: Any) -> dict[str, Any] | None:
+    """Best-effort OpenAI usage serialization for JSON debug payloads."""
+    if usage is None:
+        return None
+    if hasattr(usage, "model_dump"):
+        try:
+            return usage.model_dump()
+        except Exception:
+            pass
+    if isinstance(usage, dict):
+        return usage
+    return {"repr": repr(usage)}
 
 
 # ---------------------------------------------------------------------------
@@ -408,9 +439,24 @@ def generate_latex_from_docx(
     model = settings.model_name
     if model.startswith("openai/"):
         model = model[len("openai/"):]
+    completion_token_budget = max(settings.max_tokens or 16000, 4000)
+    if model.startswith("gpt-5") and completion_token_budget < 16000:
+        completion_token_budget = 16000
 
     # Format the structured content as a readable string for the LLM
     content_description = _format_content_for_llm(structured_content)
+    debug_context: dict[str, Any] = {
+        "model": model,
+        "target_pages": target_pages,
+        "max_retries": max_retries,
+        "completion_token_budget": completion_token_budget,
+        "input": {
+            "element_count": len(structured_content.get("elements", [])),
+            "raw_text_chars": len(structured_content.get("raw_text", "") or ""),
+            "formatted_prompt_chars": len(content_description),
+        },
+        "attempts": [],
+    }
 
     messages: list[dict] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
@@ -424,26 +470,48 @@ def generate_latex_from_docx(
     ]
 
     last_error = ""
+    last_exception: Exception | None = None
 
     for attempt in range(1, max_retries + 1):
         logger.info("DOCX->JSON classification attempt %d/%d", attempt, max_retries)
+        attempt_debug: dict[str, Any] = {"attempt": attempt}
 
         # --- Call LLM -------------------------------------------------------
         try:
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,
-                max_completion_tokens=4000,
+                max_completion_tokens=completion_token_budget,
                 response_format={"type": "json_object"},
             )
-            raw_output = response.choices[0].message.content or ""
+            choice = response.choices[0]
+            raw_output = choice.message.content or ""
+            finish_reason = getattr(choice, "finish_reason", None)
+            attempt_debug.update({
+                "stage": "llm_response",
+                "response_id": getattr(response, "id", None),
+                "finish_reason": finish_reason,
+                "usage": _usage_to_debug_dict(getattr(response, "usage", None)),
+                "raw_output_chars": len(raw_output),
+                "raw_output_preview": _debug_preview(raw_output),
+            })
         except Exception as e:
             logger.error("OpenAI API error on attempt %d: %s", attempt, e)
             last_error = str(e)
+            last_exception = e
+            attempt_debug.update({
+                "stage": "openai_api_error",
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "exception_traceback": traceback.format_exc(),
+            })
+            debug_context["attempts"].append(attempt_debug)
             continue
 
         # --- Parse JSON -----------------------------------------------------
         try:
+            if not raw_output.strip():
+                raise ValueError(f"LLM returned empty response content (finish_reason={finish_reason})")
             resume_json = _extract_json_from_response(raw_output)
             resume_json = _validate_resume_json(resume_json)
             # Post-parse sanitization: strip any marker tokens that leaked into output
@@ -457,6 +525,16 @@ def generate_latex_from_docx(
         except (ValueError, json.JSONDecodeError) as e:
             logger.warning("JSON parsing failed on attempt %d: %s", attempt, e)
             last_error = str(e)
+            last_exception = e
+            attempt_debug.update({
+                "stage": "json_parse_error",
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "exception_traceback": traceback.format_exc(),
+                "raw_output_chars": len(raw_output),
+                "raw_output_preview": _debug_preview(raw_output),
+            })
+            debug_context["attempts"].append(attempt_debug)
             messages.append({"role": "assistant", "content": raw_output})
             messages.append({
                 "role": "user",
@@ -470,6 +548,16 @@ def generate_latex_from_docx(
         except RuntimeError as e:
             logger.error("DOCX safety gate: %s", e)
             last_error = str(e)
+            last_exception = e
+            attempt_debug.update({
+                "stage": "safety_gate_error",
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "exception_traceback": traceback.format_exc(),
+                "raw_output_chars": len(raw_output),
+                "raw_output_preview": _debug_preview(raw_output),
+            })
+            debug_context["attempts"].append(attempt_debug)
             messages.append({"role": "assistant", "content": raw_output})
             messages.append({
                 "role": "user",
@@ -489,12 +577,27 @@ def generate_latex_from_docx(
         except RuntimeError as e:
             logger.error("Rendering/compilation failed: %s", e)
             last_error = str(e)
-            raise
+            last_exception = e
+            attempt_debug.update({
+                "stage": "render_compile_error",
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "exception_traceback": traceback.format_exc(),
+                "raw_output_chars": len(raw_output),
+                "raw_output_preview": _debug_preview(raw_output),
+            })
+            debug_context["attempts"].append(attempt_debug)
+            raise DOCXConversionError(
+                f"DOCX to LaTeX rendering failed. Last error: {last_error}",
+                debug_context,
+            ) from e
 
-    raise RuntimeError(
+    debug_context["last_error"] = last_error
+    raise DOCXConversionError(
         f"DOCX to LaTeX conversion failed after {max_retries} attempts. "
-        f"Last error: {last_error}"
-    )
+        f"Last error: {last_error}",
+        debug_context,
+    ) from last_exception
 
 
 def _format_content_for_llm(structured_content: dict) -> str:

@@ -30,6 +30,12 @@ function DetailRow({ label, value }: { label: string; value: string | null | und
   );
 }
 
+function userDisplayName(debug: AdminConversionDebugResponse): string | null {
+  const name = [debug.user_first_name, debug.user_last_name].filter(Boolean).join(' ').trim();
+  if (name && debug.user_email) return `${name} (${debug.user_email})`;
+  return name || debug.user_email || null;
+}
+
 function AdminConversionDebugContent() {
   const params = useParams();
   const conversionId = typeof params.conversionId === 'string' ? params.conversionId : '';
@@ -67,6 +73,12 @@ function AdminConversionDebugContent() {
     toast.success('Error copied');
   };
 
+  const copyDebugContext = async () => {
+    if (!debug?.debug_context) return;
+    await navigator.clipboard.writeText(JSON.stringify(debug.debug_context, null, 2));
+    toast.success('Debug context copied');
+  };
+
   if (loading) {
     return (
       <div className="container mx-auto max-w-6xl space-y-6 py-8">
@@ -94,6 +106,8 @@ function AdminConversionDebugContent() {
       </div>
     );
   }
+
+  const userLabel = userDisplayName(debug);
 
   return (
     <div className="container mx-auto max-w-6xl space-y-6 py-8">
@@ -148,6 +162,8 @@ function AdminConversionDebugContent() {
             <DetailRow label="Queue" value={debug.queue} />
             <DetailRow label="Status source" value={debug.status_source} />
             <DetailRow label="Failed at" value={formatDate(debug.failed_at)} />
+            <DetailRow label="User" value={userLabel || 'Unknown or unauthenticated'} />
+            <DetailRow label="User ID" value={debug.user_id} />
           </dl>
 
           <div className="space-y-2">
@@ -164,6 +180,30 @@ function AdminConversionDebugContent() {
               {debug.error_message || 'No error message stored.'}
             </pre>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex-row items-start justify-between gap-4">
+          <div className="space-y-2">
+            <CardTitle>LLM Attempt Diagnostics</CardTitle>
+            <CardDescription>
+              Per-attempt model, token budget, finish reason, raw output preview, and parse/render errors.
+            </CardDescription>
+          </div>
+          {debug.debug_context && (
+            <Button variant="outline" size="sm" onClick={copyDebugContext}>
+              <Clipboard className="h-4 w-4" />
+              Copy
+            </Button>
+          )}
+        </CardHeader>
+        <CardContent>
+          <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted px-4 py-3 font-mono text-xs leading-relaxed">
+            {debug.debug_context
+              ? JSON.stringify(debug.debug_context, null, 2)
+              : 'No LLM attempt diagnostics stored for this conversion.'}
+          </pre>
         </CardContent>
       </Card>
 
