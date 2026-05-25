@@ -9,8 +9,6 @@ services:
       dockerfile: backend/Dockerfile
     container_name: tailortom-api
     restart: unless-stopped
-    ports:
-      - "8000:8000"
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0

@@ -75,18 +75,7 @@ Caddy in this repo acts as a reverse proxy and gets a free TLS certificate from 
    Caddy will listen on 80 and 443, request a certificate for `api.tailortom.org`, and proxy to the API container.
 
 4. **Use the API**  
-   Point the frontend (e.g. on Vercel) to `https://api.tailortom.org`. No need to open port 8000 publicly unless you want to; Caddy handles HTTPS and forwards to the API.
-
-### Optional: stop exposing the API on port 8000
-
-To avoid direct access to the API on port 8000, in `docker-compose.yml` change the api service ports to:
-
-```yaml
-ports:
-  - "127.0.0.1:8000:8000"
-```
-
-Then only Caddy (on the same host) can reach the API.
+   Point the frontend (e.g. on Vercel) to `https://api.tailortom.org`. Caddy is the only public entrypoint; it handles HTTPS and forwards to the API over the private Docker network.
 
 ---
 
