@@ -7,6 +7,7 @@ templates.  Includes a page-fitting algorithm that binary-searches over a
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from tailor_tom.latex_compiler import compile_latex
 
@@ -33,6 +34,37 @@ _LATEX_SPECIAL = {
 def _escape_latex(text: str) -> str:
     """Escape LaTeX special characters in user-provided content."""
     return "".join(_LATEX_SPECIAL.get(c, c) for c in text)
+
+
+def _contains_non_ascii(value: Any) -> bool:
+    """Return True when a nested resume JSON value contains non-ASCII text."""
+    if isinstance(value, str):
+        return any(ord(ch) > 127 for ch in value)
+    if isinstance(value, dict):
+        return any(_contains_non_ascii(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_contains_non_ascii(v) for v in value)
+    return False
+
+
+_CJK_RANGES = (
+    ("\u3040", "\u30ff"),
+    ("\u3400", "\u4dbf"),
+    ("\u4e00", "\u9fff"),
+    ("\uf900", "\ufaff"),
+    ("\uac00", "\ud7af"),
+)
+
+
+def _contains_cjk(value: Any) -> bool:
+    """Return True when a nested resume JSON value contains CJK text."""
+    if isinstance(value, str):
+        return any(start <= ch <= end for ch in value for start, end in _CJK_RANGES)
+    if isinstance(value, dict):
+        return any(_contains_cjk(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_contains_cjk(v) for v in value)
+    return False
 
 
 def _escape_url(url: str) -> str:
@@ -91,7 +123,11 @@ def get_spacing_config(tightness: float) -> SpacingConfig:
 def render_resume_to_latex(resume_json: dict, config: SpacingConfig) -> str:
     """Render structured resume JSON into a complete LaTeX document string."""
     parts: list[str] = [
-        _render_preamble(config),
+        _render_preamble(
+            config,
+            unicode_fonts=_contains_non_ascii(resume_json),
+            cjk_fonts=_contains_cjk(resume_json),
+        ),
         "\\begin{document}\n\n",
     ]
 
@@ -185,12 +221,29 @@ def fit_to_pages(resume_json: dict, target_pages: int) -> tuple[str, bytes]:
 # ---------------------------------------------------------------------------
 
 
-def _render_preamble(c: SpacingConfig) -> str:
+def _render_preamble(c: SpacingConfig, *, unicode_fonts: bool = False, cjk_fonts: bool = False) -> str:
+    font_setup = "\\usepackage[T1]{fontenc}\n\\usepackage[utf8]{inputenc}\n"
+    if unicode_fonts:
+        font_setup = (
+            "\\usepackage{fontspec}\n"
+            "\\defaultfontfeatures{Ligatures=TeX}\n"
+            "\\IfFontExistsTF{Latin Modern Roman}{\\setmainfont{Latin Modern Roman}}"
+            "{\\IfFontExistsTF{Arial}{\\setmainfont{Arial}}"
+            "{\\IfFontExistsTF{Liberation Sans}{\\setmainfont{Liberation Sans}}{\\setmainfont{DejaVu Sans}}}}\n"
+        )
+        if cjk_fonts:
+            font_setup += (
+                "\\usepackage{xeCJK}\n"
+                "\\IfFontExistsTF{Noto Serif CJK SC}{\\setCJKmainfont{Noto Serif CJK SC}}"
+                "{\\IfFontExistsTF{Noto Sans CJK SC}{\\setCJKmainfont{Noto Sans CJK SC}}"
+                "{\\IfFontExistsTF{FandolSong-Regular}{\\setCJKmainfont{FandolSong-Regular}}{}}}\n"
+            )
+
     return (
         f"\\documentclass[{c.font_size}pt]{{article}}\n"
         f"\\usepackage[top={c.margin_tb}in, bottom={c.margin_tb}in, "
         f"left={c.margin_lr}in, right={c.margin_lr}in]{{geometry}}\n"
-        "\\usepackage[T1]{fontenc}\n"
+        f"{font_setup}"
         "\\usepackage{enumitem}\n"
         "\\usepackage{titlesec}\n"
         "\\usepackage[hidelinks]{hyperref}\n"

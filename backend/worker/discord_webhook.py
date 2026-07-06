@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 DISCORD_FAILED_ALERT_KEY_PREFIX = "discord:failed-alert:"
 DISCORD_FAILED_ALERT_TTL_DAYS = 30
 DISCORD_FAILED_ALERT_TTL_SECONDS = DISCORD_FAILED_ALERT_TTL_DAYS * 24 * 3600
+DISCORD_FAILED_ALERT_FINGERPRINT_TTL_SECONDS = 6 * 3600
 
 # Discord embed color: red
 EMBED_COLOR_ERROR = 0xFF0000
@@ -74,6 +75,8 @@ def notify_terminal_failure_once(
     passes_done: Optional[int] = None,
     status_source: Optional[str] = None,
     admin_url: Optional[str] = None,
+    extra_fields: Optional[dict[str, Any]] = None,
+    dedupe_fingerprint: Optional[str] = None,
 ) -> None:
     """Send at most one Discord alert per entity (job or conversion) for terminal failures.
 
@@ -84,18 +87,24 @@ def notify_terminal_failure_once(
     if not url:
         return
     webhook_target = _webhook_target_for_logs(url)
-    if kind == "optimize_job":
+    if dedupe_fingerprint:
+        dedupe_key = f"{DISCORD_FAILED_ALERT_KEY_PREFIX}{kind}:fingerprint:{dedupe_fingerprint}"
+        dedupe_ttl = DISCORD_FAILED_ALERT_FINGERPRINT_TTL_SECONDS
+    elif kind == "optimize_job":
         dedupe_key = f"{DISCORD_FAILED_ALERT_KEY_PREFIX}job:{entity_id}"
+        dedupe_ttl = DISCORD_FAILED_ALERT_TTL_SECONDS
     elif kind == "docx_conversion":
         dedupe_key = f"{DISCORD_FAILED_ALERT_KEY_PREFIX}conversion:{entity_id}"
+        dedupe_ttl = DISCORD_FAILED_ALERT_TTL_SECONDS
     else:
         dedupe_key = f"{DISCORD_FAILED_ALERT_KEY_PREFIX}{kind}:{entity_id}"
+        dedupe_ttl = DISCORD_FAILED_ALERT_TTL_SECONDS
     try:
         created = redis_client.set(
             dedupe_key,
             "1",
             nx=True,
-            ex=DISCORD_FAILED_ALERT_TTL_SECONDS,
+            ex=dedupe_ttl,
         )
     except Exception as e:
         logger.warning("[discord_webhook] Dedupe key set failed for %s %s: %s", kind, entity_id, e)
@@ -125,6 +134,15 @@ def notify_terminal_failure_once(
         fields.append({"name": _truncate("Passes", DISCORD_EMBED_FIELD_NAME_MAX), "value": str(passes_done), "inline": True})
     if status_source:
         fields.append({"name": _truncate("Status source", DISCORD_EMBED_FIELD_NAME_MAX), "value": _truncate(status_source, DISCORD_EMBED_FIELD_VALUE_MAX), "inline": True})
+    if extra_fields:
+        for name, value in extra_fields.items():
+            if value is None:
+                continue
+            fields.append({
+                "name": _truncate(str(name), DISCORD_EMBED_FIELD_NAME_MAX),
+                "value": _truncate(str(value), DISCORD_EMBED_FIELD_VALUE_MAX),
+                "inline": True,
+            })
     if admin_url:
         fields.append({
             "name": _truncate("Admin trace", DISCORD_EMBED_FIELD_NAME_MAX),

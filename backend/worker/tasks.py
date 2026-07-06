@@ -3,6 +3,7 @@
 import base64
 import ctypes
 import gc
+import hashlib
 import json
 import logging
 import os
@@ -93,6 +94,23 @@ def _v3_result_to_db_payload(result: V3OptimizationResult) -> dict:
             "estimated_cost_usd": result.token_usage.estimated_cost_usd,
             "usage_source": result.token_usage.usage_source,
         }
+    diagnostics = result.diagnostics or {}
+    if diagnostics.get("baseline_quality_issues_summary") is not None:
+        analysis_json["baseline_quality"] = {
+            "page_count": diagnostics.get("baseline_page_count"),
+            "passes": diagnostics.get("baseline_quality_passes"),
+            "issues_summary": diagnostics.get("baseline_quality_issues_summary"),
+            "long_bullet_count": diagnostics.get("baseline_long_bullet_count"),
+            "long_bullets": diagnostics.get("baseline_long_bullets", []),
+        }
+    if diagnostics.get("final_quality_issues_summary") is not None:
+        analysis_json["final_quality"] = {
+            "page_count": diagnostics.get("final_page_count"),
+            "passes": diagnostics.get("final_quality_passes"),
+            "issues_summary": diagnostics.get("final_quality_issues_summary"),
+            "long_bullet_count": diagnostics.get("final_long_bullet_count"),
+            "long_bullets": diagnostics.get("final_long_bullets", []),
+        }
     payload = {
         "analysis_json": analysis_json,
         "llm_usage_source": result.token_usage.usage_source if result.token_usage else None,
@@ -101,6 +119,33 @@ def _v3_result_to_db_payload(result: V3OptimizationResult) -> dict:
         "llm_estimated_cost_usd": result.token_usage.estimated_cost_usd if result.token_usage else None,
     }
     return payload
+
+
+def _optimizer_alert_fields(result: V3OptimizationResult) -> dict[str, str]:
+    """Compact optimizer diagnostics for Discord terminal failure fields."""
+    diag = result.diagnostics or {}
+    fields: dict[str, str] = {}
+    baseline_page = diag.get("baseline_page_count")
+    final_page = diag.get("final_page_count") or result.page_count
+    if baseline_page is not None or final_page:
+        fields["Pages"] = f"{baseline_page or '?'} -> {final_page or '?'}"
+    baseline_long = diag.get("baseline_long_bullet_count")
+    final_long = diag.get("final_long_bullet_count")
+    if baseline_long is not None or final_long is not None:
+        fields["Long bullets"] = f"{baseline_long if baseline_long is not None else '?'} -> {final_long if final_long is not None else '?'}"
+    fallback = diag.get("stage3_quality_fallback") or {}
+    if isinstance(fallback, dict) and fallback.get("attempted"):
+        fields["Quality fallback"] = "succeeded" if fallback.get("success") else "attempted"
+    return fields
+
+
+def _alert_fingerprint(*parts: object) -> str:
+    """Stable short fingerprint for suppressing repeated terminal alerts."""
+    digest = hashlib.sha256()
+    for part in parts:
+        digest.update(str(part or "").encode("utf-8", errors="ignore"))
+        digest.update(b"\0")
+    return digest.hexdigest()[:24]
 
 
 def _append_warning_json_array(existing_text: str, warning: str) -> str:
@@ -509,6 +554,14 @@ def optimize_resume_task(self, job_id: str):
                     company_name=company_name,
                     passes_done=result.passes_done,
                     status_source="optimizer_result",
+                    extra_fields=_optimizer_alert_fields(result),
+                    dedupe_fingerprint=_alert_fingerprint(
+                        "optimize_job",
+                        (job or {}).get("user_id") if job else "",
+                        resume_latex,
+                        job_description,
+                        result.error_message or "Optimization failed",
+                    ),
                 )
             except Exception:
                 pass
@@ -688,7 +741,8 @@ def convert_docx_task(self, conversion_id: str):
                 "status": "failed",
                 "task_name": "convert_docx_task",
                 "task_id": getattr(getattr(self, "request", None), "id", None),
-                "queue": "docx",
+                "queue": settings.celery_queue_name,
+                "priority": 0,
                 "status_source": "exception",
                 "error_message": str(exc),
                 "traceback": traceback_text,
@@ -707,15 +761,27 @@ def convert_docx_task(self, conversion_id: str):
         except Exception:
             pass
         try:
+            structured_for_fingerprint = data.get("structured_content") if isinstance(data, dict) else {}
+            raw_text_for_fingerprint = (
+                structured_for_fingerprint.get("raw_text", "")
+                if isinstance(structured_for_fingerprint, dict)
+                else ""
+            )
             notify_terminal_failure_once(
                 rc,
                 kind="docx_conversion",
                 entity_id=str(conversion_id),
                 task_name="convert_docx_task",
                 error_message=str(exc),
-                queue="docx",
+                queue=settings.celery_queue_name,
                 status_source="exception",
                 admin_url=admin_url,
+                dedupe_fingerprint=_alert_fingerprint(
+                    "docx_conversion",
+                    data.get("user_id") if isinstance(data, dict) else "",
+                    raw_text_for_fingerprint,
+                    str(exc),
+                ),
             )
         except Exception:
             pass

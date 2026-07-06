@@ -11,6 +11,7 @@ from tailor_tom.optimizer.v3.stage1_generator import generate_candidates, Genera
 from tailor_tom.optimizer.v3.stage2_validation import run_feasibility, FeasibilityResult
 from tailor_tom.optimizer.v3.stage3_chooser import run_chooser, apply_and_verify
 from tailor_tom.optimizer.v3.debug_logging import debug_enabled, debug_log
+from tailor_tom.layout_analyzer import check_quality
 from tailor_tom.optimizer.v3.stage2_validation import (
     REASON_APPLY_NO_EFFECT,
     REASON_COMPILE_FAILED,
@@ -40,7 +41,7 @@ def _repair_hint_for_reason(reason_code: str) -> str:
         REASON_APPLY_NO_EFFECT: "Make a substantive change or keep original.",
         REASON_INVALID_PAYLOAD: "Return valid bullet_id and LaTeX.",
         REASON_COMPILE_FAILED: "Ensure valid LaTeX and no broken commands.",
-        REASON_LINE_COUNT_MISMATCH: "Preserve line count so bullet fits layout.",
+        REASON_LINE_COUNT_MISMATCH: "Meet the rendered line target so bullet fits layout.",
         REASON_LINE_MAPPING_MISSING: "Post-compile bullet at source item index missing; layout may have shifted.",
     }
     return hints.get(reason_code, "Address validation failure.")
@@ -54,6 +55,46 @@ def _bullet_id_from_option_id(option_id: str) -> Optional[int]:
         return int(option_id.split("_", 1)[0][1:])
     except (ValueError, IndexError):
         return None
+
+
+def _compact_long_bullets(long_bullets: list[dict], limit: int = 10) -> list[dict]:
+    """Return compact, non-sensitive-enough previews for diagnostics."""
+    out: list[dict] = []
+    for bullet in long_bullets[:limit]:
+        preview = " ".join((bullet.get("text_preview") or "").split())
+        out.append({
+            "item_index": bullet.get("item_index"),
+            "bullet_id": bullet.get("item_id"),
+            "line_count": bullet.get("line_count", 0),
+            "text_preview": preview[:180],
+        })
+    return out
+
+
+def _baseline_quality_diagnostics(s0: Stage0Result, target_pages: int) -> tuple[dict, object | None]:
+    """Compute baseline quality once so failures can explain pre-existing issues."""
+    compile_result = s0.compile_result
+    diagnostics: dict = {
+        "baseline_page_count": compile_result.page_count if compile_result else 0,
+        "baseline_quality_passes": None,
+        "baseline_quality_issues_summary": "",
+        "baseline_long_bullet_count": 0,
+        "baseline_long_bullets": [],
+    }
+    if not compile_result or not compile_result.success or not compile_result.pdf_bytes:
+        return diagnostics, None
+    quality = check_quality(
+        pdf_bytes=compile_result.pdf_bytes,
+        target_pages=target_pages,
+        latex=s0.original_latex,
+    )
+    diagnostics.update({
+        "baseline_quality_passes": quality.passes,
+        "baseline_quality_issues_summary": quality.issues_summary,
+        "baseline_long_bullet_count": len(quality.long_bullets),
+        "baseline_long_bullets": _compact_long_bullets(quality.long_bullets),
+    })
+    return diagnostics, quality
 
 
 def optimize_resume_v3(
@@ -76,8 +117,10 @@ def optimize_resume_v3(
             passes_done=0,
             diagnostics={"stage": "stage0", "error": s0.error_message},
         )
+    baseline_diagnostics, baseline_quality = _baseline_quality_diagnostics(s0, target_pages)
     if s0.no_eligible:
         diag: dict = {"stage": "stage0", "no_eligible": True, "k": 0}
+        diag.update(baseline_diagnostics)
         if getattr(s0, "stage0_diagnostics", None):
             diag.update(s0.stage0_diagnostics)
             diag["dropped_for_mapping_count"] = (
@@ -89,13 +132,17 @@ def optimize_resume_v3(
                 + (diag.get("stage0_dropped_low_confidence_sample") or [])[:10]
             )[:20]
         diag["mapping_integrity_passed"] = True
+        quality_passes = baseline_quality.passes if baseline_quality is not None else True
+        quality_issues = baseline_quality.issues_summary if baseline_quality is not None else ""
         return V3OptimizationResult(
-            success=True,
+            success=quality_passes,
             optimized_latex=resume_latex,
             pdf_bytes=s0.compile_result.pdf_bytes if s0.compile_result else None,
             page_count=s0.compile_result.page_count if s0.compile_result else 0,
             passes_done=0,
-            quality_passes=True,
+            error_message=None if quality_passes else quality_issues,
+            quality_passes=quality_passes,
+            quality_issues_summary=quality_issues,
             token_usage=usage_from_counts(0, 0, 0.0, "estimated"),
             diagnostics=diag,
         )
@@ -118,6 +165,7 @@ def optimize_resume_v3(
     token_usage_acc = usage_from_counts(0, 0, 0.0, "")
     diagnostics: dict = {
         "k": len(bullets),
+        **baseline_diagnostics,
         "pass1_reason_histogram_by_iter": [],
         "pass2_reason_histogram_by_iter": [],
         "rejection_reasons_by_bullet": {},
@@ -157,14 +205,13 @@ def optimize_resume_v3(
         return out
 
     for iteration in range(max_iterations):
-        used_iterations += 1
         feasible_generated_by_bullet = _feasible_generated_by_bullet()
         bullets_with_zero = [b.bullet_id for b in bullets if not feasible_generated_by_bullet.get(b.bullet_id)]
         diagnostics["bullets_with_zero_feasible_generated"] = bullets_with_zero
 
         if not bullets_with_zero:
             diagnostics["early_stop"] = True
-            diagnostics["max_iterations_used"] = used_iterations - 1
+            diagnostics["max_iterations_used"] = used_iterations
             if debug_enabled():
                 debug_log(logger, "v3_early_stop", iteration=iteration)
             break
@@ -207,6 +254,7 @@ def optimize_resume_v3(
 
         gen_bullets = bullets if iteration == 0 else [b for b in bullets if b.bullet_id in bullets_with_zero]
 
+        used_iterations += 1
         new_candidates, usage, llm_error = generate_candidates(
             gen_bullets,
             job_description,
@@ -328,9 +376,22 @@ def optimize_resume_v3(
     diagnostics["invalid_cross_bullet_choice_count"] = chooser_result.invalid_cross_bullet_choice_count
     diagnostics["forced_changed_bullet_ids"] = chooser_result.forced_changed_bullet_ids
     diagnostics["forced_changed_count"] = len(chooser_result.forced_changed_bullet_ids)
+    diagnostics["forced_overlong_bullet_ids"] = chooser_result.forced_overlong_bullet_ids
+    diagnostics["forced_overlong_count"] = len(chooser_result.forced_overlong_bullet_ids)
     diagnostics["min_changed_target"] = chooser_result.min_changed_target
 
-    success, err, pdf_bytes, page_count, quality_passes, quality_issues, final_latex, effective_choices, dropped_bullet_ids = apply_and_verify(
+    (
+        success,
+        err,
+        pdf_bytes,
+        page_count,
+        quality_passes,
+        quality_issues,
+        final_latex,
+        effective_choices,
+        dropped_bullet_ids,
+        quality_fallback,
+    ) = apply_and_verify(
         original_latex,
         bullets,
         choices,
@@ -365,12 +426,20 @@ def optimize_resume_v3(
     diagnostics["chooser_effective_selected"] = effective_choices
     diagnostics["stage3_dropped_bullet_ids"] = dropped_bullet_ids
     diagnostics["stage3_dropped_bullet_count"] = len(dropped_bullet_ids)
+    diagnostics["stage3_quality_fallback"] = quality_fallback
     diagnostics["fallback_filled_bullet_ids"] = chooser_result.missing_filled_bullet_ids
     changed_bullet_count = sum(1 for bid, oid in effective_choices.items() if oid != f"b{bid}_orig")
     diagnostics["changed_bullet_count"] = changed_bullet_count
     diagnostics["original_kept_count"] = len(effective_choices) - changed_bullet_count
     diagnostics["j"] = len(all_candidates)
     diagnostics["mapping_integrity_passed"] = True
+    diagnostics["final_page_count"] = page_count
+    diagnostics["final_quality_passes"] = quality_passes
+    diagnostics["final_quality_issues_summary"] = quality_issues
+    if pdf_bytes:
+        final_quality = check_quality(pdf_bytes=pdf_bytes, target_pages=target_pages, latex=final_latex)
+        diagnostics["final_long_bullet_count"] = len(final_quality.long_bullets)
+        diagnostics["final_long_bullets"] = _compact_long_bullets(final_quality.long_bullets)
     # Drop large refs so they can be GC'd before return
     all_candidates.clear()
 

@@ -24,6 +24,7 @@ MAPPING_STATUS_DROPPED_LOW_CONFIDENCE = "dropped_low_confidence"
 # Section names that are not editable (V1-equivalent eligibility)
 _NON_EDITABLE_SECTIONS = ("Education", "Skills", "Unknown")
 _MIN_WORDS_ELIGIBLE = 3
+_MAX_BULLET_LINES = 3
 
 # Education content phrases (protect from editing)
 _EDUCATION_CONTENT_PHRASES = (
@@ -57,6 +58,7 @@ class BulletConstraint:
     line_count: int
     word_count: int
     char_count: int
+    target_line_count: int = _MAX_BULLET_LINES
     snippet_occurrence_index: int = 0  # N-th occurrence of this snippet in original latex (0-based)
     source_item_index: int = -1  # 0-based index in LaTeX items (stable ownership key)
     mapping_similarity: float = 0.0
@@ -200,6 +202,7 @@ def _extract_bullet_constraints(
                 line_count=0,
                 word_count=0,
                 char_count=0,
+                target_line_count=_MAX_BULLET_LINES,
                 source_item_index=-1,
                 mapping_similarity=0.0,
                 mapping_status=MAPPING_STATUS_DROPPED_UNMATCHED,
@@ -226,6 +229,7 @@ def _extract_bullet_constraints(
                 line_count=line_count,
                 word_count=word_count,
                 char_count=char_count,
+                target_line_count=min(line_count, _MAX_BULLET_LINES),
                 source_item_index=item_index,
                 mapping_similarity=match_similarity,
                 mapping_status=MAPPING_STATUS_DROPPED_UNMATCHED,
@@ -245,6 +249,7 @@ def _extract_bullet_constraints(
                 line_count=line_count,
                 word_count=word_count,
                 char_count=char_count,
+                target_line_count=min(line_count, _MAX_BULLET_LINES),
                 source_item_index=item_index,
                 mapping_similarity=sim,
                 mapping_status=MAPPING_STATUS_DROPPED_LOW_CONFIDENCE,
@@ -260,6 +265,7 @@ def _extract_bullet_constraints(
             line_count=line_count,
             word_count=word_count,
             char_count=char_count,
+            target_line_count=min(line_count, _MAX_BULLET_LINES),
             source_item_index=item_index,
             mapping_similarity=sim,
             mapping_status=MAPPING_STATUS_MAPPED,

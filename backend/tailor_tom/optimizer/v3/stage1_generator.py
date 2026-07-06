@@ -30,6 +30,9 @@ def _adaptive_word_window_for_prompt(b: BulletConstraint) -> tuple[int, int]:
         adaptive_shrink_words = max(base_max_shrink_words, int(math.ceil(b.word_count * short_ratio)))
     else:
         adaptive_shrink_words = base_max_shrink_words
+    target_line_count = int(getattr(b, "target_line_count", b.line_count))
+    if target_line_count < b.line_count:
+        adaptive_shrink_words = max(adaptive_shrink_words, int(math.ceil(b.word_count * 0.45)))
     min_words_allowed = max(2, b.word_count - adaptive_shrink_words)
     max_words_allowed = b.word_count + max_word_growth
     return min_words_allowed, max_words_allowed
@@ -51,9 +54,10 @@ class GenerateCandidatesSignature(dspy.Signature):
     """Replace words in resume bullets with ATS-friendly keywords from the job description.
 
     LINE COUNT RULE (CRITICAL):
-    - Each bullet has a specified line count.
-    - Replacement must preserve that rendered line count target.
-    - Longer or shorter rendered bullets are rejected downstream.
+    - Each bullet has a specified rendered line-count target.
+    - If the original line count already exceeds the target, rewrite it shorter
+      so it fits within the target.
+    - Otherwise preserve the rendered line count target.
 
     WORD/CHAR RULES (CRITICAL):
     - Max words per bullet are provided in input.
@@ -101,8 +105,13 @@ def _format_bullets_for_llm(
             lines.append(f"- B{bullet_id}: {reason}")
         lines.append("")
     for b in bullets:
+        target_line_count = int(getattr(b, "target_line_count", b.line_count))
+        if target_line_count < b.line_count:
+            line_policy = f"MUST shrink from {b.line_count} to <= {target_line_count} line(s)"
+        else:
+            line_policy = f"MUST stay {b.line_count} line(s)"
         lines.append(
-            f"**B{b.bullet_id}** [{b.section}] MUST stay {b.line_count} line(s), "
+            f"**B{b.bullet_id}** [{b.section}] {line_policy}, "
             f"max {b.word_count} words, original chars {b.char_count}"
         )
         min_words_allowed, max_words_allowed = _adaptive_word_window_for_prompt(b)

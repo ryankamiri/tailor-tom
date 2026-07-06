@@ -869,8 +869,22 @@ def extract_line_metrics(pdf_bytes: bytes, latex: Optional[str] = None) -> Dict:
                     # Item not found in PDF - skip it
                     continue
                 
-                # Use the best match (but verify similarity is high enough)
+                next_item_full_text = None
+                next_item_text = None
+                if item_index + 1 < len(items):
+                    next_item_full_text = items[item_index + 1]["text"]
+                    next_item_text = next_item_full_text[:200]
+
+                # Use the best match, but prefer matches that do not already
+                # include the start of the next LaTeX item.
                 best_match = matches[0]
+                if next_item_full_text:
+                    next_item_start = next_item_full_text[:60].strip().lower()
+                    for candidate in matches:
+                        candidate_text = (candidate.get("text") or "").strip().lower()
+                        if not next_item_start or next_item_start not in candidate_text:
+                            best_match = candidate
+                            break
                 similarity = best_match.get("similarity", 0)
                 if similarity < 0.7:
                     # Match quality too low - skip this item to avoid false positives
@@ -1020,18 +1034,6 @@ def extract_line_metrics(pdf_bytes: bytes, latex: Optional[str] = None) -> Dict:
                     continuation_lines = []
                     current_bottom_y = y_end  # Bottom of matched text (largest Y in the match)
                     bullet_x_indent = x_start  # X-indentation of the bullet (for comparison with text content)
-                    
-                    # Check if there's a next item to avoid matching into it
-                    next_item_text = None
-                    next_item_full_text = None
-                    current_item_idx = None
-                    for idx, it in enumerate(items):
-                        if it["text"] == item_text:
-                            current_item_idx = idx
-                            break
-                    if current_item_idx is not None and current_item_idx + 1 < len(items):
-                        next_item_full_text = items[current_item_idx + 1]["text"]
-                        next_item_text = next_item_full_text[:200]  # First 200 chars of next item for better matching
                     
                     # Find the first line that's below our match (Y > current_bottom_y)
                     # Then check subsequent lines for continuation

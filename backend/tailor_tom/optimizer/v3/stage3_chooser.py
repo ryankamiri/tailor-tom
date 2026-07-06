@@ -32,6 +32,7 @@ class ChooserResult:
     missing_filled_count: int = 0
     invalid_cross_bullet_choice_count: int = 0
     forced_changed_bullet_ids: list[int] = field(default_factory=list)
+    forced_overlong_bullet_ids: list[int] = field(default_factory=list)
     min_changed_target: int = 0
 
 
@@ -333,6 +334,120 @@ def _apply_choices_to_latex(
     return current, effective_choices, dropped_bullet_ids
 
 
+def _compile_and_check_quality(final_latex: str, target_pages: int):
+    """Compile a final candidate and run the quality gate."""
+    compile_result = compile_latex(final_latex)
+    if not compile_result.success:
+        return False, compile_result.error_message or "Final compile failed", None, 0, None
+    quality = check_quality(
+        pdf_bytes=compile_result.pdf_bytes or b"",
+        target_pages=target_pages,
+        latex=final_latex,
+    )
+    return True, "", compile_result.pdf_bytes, compile_result.page_count or 0, quality
+
+
+def _try_quality_fallback_by_reverting(
+    original_latex: str,
+    bullets: list[BulletConstraint],
+    effective_choices: dict[int, str],
+    option_id_to_latex: dict[str, str],
+    target_pages: int,
+) -> tuple[bool, Optional[bytes], int, bool, str, str, dict[int, str], list[int], dict]:
+    """Try restoring changed bullets to originals until the final quality gate passes."""
+    changed_bids = [bid for bid, oid in effective_choices.items() if oid != f"b{bid}_orig"]
+    changed_bids.sort(
+        key=lambda bid: (
+            -(
+                len(option_id_to_latex.get(effective_choices.get(bid, ""), ""))
+                - len(option_id_to_latex.get(f"b{bid}_orig", ""))
+            ),
+            bid,
+        )
+    )
+    fallback_meta = {
+        "attempted": bool(changed_bids),
+        "success": False,
+        "reverted_bullet_ids": [],
+        "attempts": [],
+    }
+    if not changed_bids:
+        return False, None, 0, False, "", original_latex, effective_choices, [], fallback_meta
+
+    trial_choices = dict(effective_choices)
+    reverted: list[int] = []
+    last_latex = original_latex
+    last_effective = dict(effective_choices)
+    last_dropped: list[int] = []
+    last_quality_issues = ""
+    last_page_count = 0
+    last_pdf: Optional[bytes] = None
+
+    for bid in changed_bids:
+        trial_choices[bid] = f"b{bid}_orig"
+        reverted.append(bid)
+        trial_latex, trial_effective, trial_dropped = _apply_choices_to_latex(
+            original_latex, bullets, trial_choices, option_id_to_latex
+        )
+        ownership_ok, ownership_err = _verify_ownership_after_apply(
+            trial_latex, bullets, trial_effective, option_id_to_latex
+        )
+        if not ownership_ok:
+            fallback_meta["attempts"].append({
+                "reverted_bullet_ids": list(reverted),
+                "error": f"Ownership verification failed: {ownership_err}",
+            })
+            continue
+        compiled, compile_err, pdf_bytes, page_count, quality = _compile_and_check_quality(
+            trial_latex, target_pages
+        )
+        if not compiled or quality is None:
+            fallback_meta["attempts"].append({
+                "reverted_bullet_ids": list(reverted),
+                "error": compile_err,
+            })
+            continue
+        last_latex = trial_latex
+        last_effective = trial_effective
+        last_dropped = trial_dropped
+        last_quality_issues = quality.issues_summary
+        last_page_count = page_count
+        last_pdf = pdf_bytes
+        fallback_meta["attempts"].append({
+            "reverted_bullet_ids": list(reverted),
+            "page_count": page_count,
+            "quality_passes": quality.passes,
+            "quality_issues_summary": quality.issues_summary,
+        })
+        if quality.passes:
+            fallback_meta["success"] = True
+            fallback_meta["reverted_bullet_ids"] = list(reverted)
+            return (
+                True,
+                pdf_bytes,
+                page_count,
+                True,
+                quality.issues_summary,
+                trial_latex,
+                trial_effective,
+                trial_dropped,
+                fallback_meta,
+            )
+
+    fallback_meta["reverted_bullet_ids"] = list(reverted)
+    return (
+        True,
+        last_pdf,
+        last_page_count,
+        False,
+        last_quality_issues,
+        last_latex,
+        last_effective,
+        last_dropped,
+        fallback_meta,
+    )
+
+
 def run_chooser(
     original_latex: str,
     bullets: list[BulletConstraint],
@@ -431,6 +546,29 @@ def run_chooser(
             choices_dict[bid] = promote_oid
             forced_changed.append(bid)
 
+    # If an original bullet violates the long-bullet gate, prefer the shortest
+    # feasible repair over the original. Stage 2 has already verified the
+    # replacement meets the rendered line target for these bullets.
+    forced_overlong: list[int] = []
+    for b in bullets:
+        target_line_count = int(getattr(b, "target_line_count", b.line_count))
+        if target_line_count >= b.line_count:
+            continue
+        opts = options_per_bullet.get(b.bullet_id, [])
+        non_orig = [
+            oid for oid in opts
+            if oid in valid_option_ids and oid != f"b{b.bullet_id}_orig"
+        ]
+        if not non_orig:
+            continue
+        best_oid = min(
+            non_orig,
+            key=lambda oid: len(_strip_latex_commands(option_id_to_latex.get(oid, ""))),
+        )
+        if choices_dict.get(b.bullet_id) != best_oid:
+            choices_dict[b.bullet_id] = best_oid
+            forced_overlong.append(b.bullet_id)
+
     completion_chars = 0
     try:
         completion_chars = len(json.dumps(raw))
@@ -446,6 +584,7 @@ def run_chooser(
             missing_filled_bullet_ids=missing_filled,
             invalid_cross_bullet_choice_count=invalid_cross_bullet_choice_count,
             forced_changed_bullet_ids=forced_changed,
+            forced_overlong_bullet_ids=forced_overlong,
             min_changed_target=min_changed_target,
             usage_source=usage.usage_source,
         )
@@ -457,6 +596,7 @@ def run_chooser(
             missing_filled_count=len(missing_filled),
             invalid_cross_bullet_choice_count=invalid_cross_bullet_choice_count,
             forced_changed_bullet_ids=forced_changed,
+            forced_overlong_bullet_ids=forced_overlong,
             min_changed_target=min_changed_target,
         ),
         None,
@@ -469,10 +609,11 @@ def apply_and_verify(
     choices: dict[int, str],
     option_id_to_latex: dict[str, str],
     target_pages: int,
-) -> tuple[bool, str, Optional[bytes], int, bool, str, str, dict[int, str], list[int]]:
+) -> tuple[bool, str, Optional[bytes], int, bool, str, str, dict[int, str], list[int], dict]:
     """Apply choices, compile, run quality check.
     Returns:
-    (success, error_message, pdf_bytes, page_count, quality_passes, quality_issues_summary, final_latex, effective_choices, dropped_bullet_ids).
+    (success, error_message, pdf_bytes, page_count, quality_passes, quality_issues_summary,
+    final_latex, effective_choices, dropped_bullet_ids, quality_fallback).
     """
     final_latex, effective_choices, dropped_bullet_ids = _apply_choices_to_latex(
         original_latex, bullets, choices, option_id_to_latex
@@ -489,25 +630,52 @@ def apply_and_verify(
                 chosen_count=len(choices),
                 dropped_bullet_ids=dropped_bullet_ids,
             )
-        return False, f"Ownership verification failed: {ownership_err}", None, 0, False, "", final_latex, effective_choices, dropped_bullet_ids
+        return False, f"Ownership verification failed: {ownership_err}", None, 0, False, "", final_latex, effective_choices, dropped_bullet_ids, {"attempted": False, "success": False}
 
-    compile_result = compile_latex(final_latex)
-    if not compile_result.success:
-        return False, compile_result.error_message or "Final compile failed", None, 0, False, "", final_latex, effective_choices, dropped_bullet_ids
-
-    quality = check_quality(
-        pdf_bytes=compile_result.pdf_bytes or b"",
-        target_pages=target_pages,
-        latex=final_latex,
-    )
+    compiled, compile_err, pdf_bytes, page_count, quality = _compile_and_check_quality(final_latex, target_pages)
+    if not compiled or quality is None:
+        return False, compile_err, None, 0, False, "", final_latex, effective_choices, dropped_bullet_ids, {"attempted": False, "success": False}
+    fallback_meta = {"attempted": False, "success": False, "reverted_bullet_ids": [], "attempts": []}
+    if not quality.passes:
+        (
+            fallback_success,
+            fallback_pdf,
+            fallback_page_count,
+            fallback_quality_passes,
+            fallback_quality_issues,
+            fallback_latex,
+            fallback_effective_choices,
+            fallback_dropped,
+            fallback_meta,
+        ) = _try_quality_fallback_by_reverting(
+            original_latex,
+            bullets,
+            effective_choices,
+            option_id_to_latex,
+            target_pages,
+        )
+        if fallback_success and fallback_meta.get("success"):
+            return (
+                True,
+                "",
+                fallback_pdf,
+                fallback_page_count,
+                fallback_quality_passes,
+                fallback_quality_issues,
+                fallback_latex,
+                fallback_effective_choices,
+                fallback_dropped,
+                fallback_meta,
+            )
     return (
         True,
         "",
-        compile_result.pdf_bytes,
-        compile_result.page_count or 0,
+        pdf_bytes,
+        page_count,
         quality.passes,
         quality.issues_summary,
         final_latex,
         effective_choices,
         dropped_bullet_ids,
+        fallback_meta,
     )

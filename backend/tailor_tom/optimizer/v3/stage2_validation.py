@@ -53,6 +53,10 @@ def _validate_pass1(
     else:
         adaptive_shrink_words = base_max_shrink_words
         adaptive_shrink_percent = base_max_shrink_percent
+    target_line_count = int(getattr(bullet, "target_line_count", bullet.line_count))
+    if target_line_count < bullet.line_count:
+        adaptive_shrink_words = max(adaptive_shrink_words, int(math.ceil(bullet.word_count * 0.45)))
+        adaptive_shrink_percent = max(adaptive_shrink_percent, 0.35)
 
     clean = _strip_latex_commands(replacement_latex or "")
     repl_words = len(clean.split()) if clean else 0
@@ -71,6 +75,8 @@ def _validate_pass1(
         "max_chars_allowed": max_chars_allowed,
         "max_shrink_words_allowed": adaptive_shrink_words,
         "max_shrink_percent_allowed": round(max_char_shrink_allowed, 4),
+        "line_count": bullet.line_count,
+        "target_line_count": target_line_count,
     }
 
     if repl_words > max_words_allowed:
@@ -194,7 +200,11 @@ def _verify_line_counts(
             reason_by_bullet_id[b.bullet_id] = REASON_LINE_MAPPING_MISSING
             continue
         new_lines = new_bullet.get("line_count", 0)
-        if new_lines != b.line_count:
+        target_line_count = int(getattr(b, "target_line_count", b.line_count))
+        if target_line_count < b.line_count:
+            if new_lines > target_line_count:
+                failures[b.bullet_id] = (b.line_count, new_lines)
+        elif new_lines != b.line_count:
             failures[b.bullet_id] = (b.line_count, new_lines)
     return failures, reason_by_bullet_id
 

@@ -75,7 +75,8 @@ def _find_tex_engine(engine: str = "xelatex") -> Optional[str]:
 # Based on research: fontspec, polyglossia, unicode-math, and direct fontspec commands
 _XETEX_REQUIRED_PACKAGES = {
     'fontspec', 'polyglossia', 'unicode-math', 'xunicode', 
-    'xeCJK', 'xePersian', 'bidi'
+    'xeCJK', 'xePersian', 'bidi', 'ctex', 'ctexart', 'ctexbook',
+    'ctexrep', 'ctexbeamer'
 }
 
 # Direct fontspec commands that indicate XeTeX/LuaTeX requirement
@@ -99,7 +100,7 @@ _COMMAND_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in _XETEX_CO
 
 @lru_cache(maxsize=128)
 def _detect_required_engine(content: str) -> str:
-    """Detect which LaTeX engine is required based on document content.
+    r"""Detect which LaTeX engine is required based on document content.
     
     Uses efficient regex-based detection to check for:
     - Packages that require XeTeX/LuaTeX (fontspec, polyglossia, unicode-math, etc.)
@@ -206,11 +207,6 @@ def compile_latex(
     # Detect which engine is needed (xelatex for fontspec, etc.)
     engine = _detect_required_engine(content)
     engine_path = _find_tex_engine(engine)
-    
-    # Fallback to pdflatex if xelatex not found
-    if not engine_path and engine == "xelatex":
-        engine = "pdflatex"
-        engine_path = _find_tex_engine(engine)
     
     if not engine_path:
         return CompileResult(
