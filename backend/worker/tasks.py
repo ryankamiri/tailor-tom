@@ -543,28 +543,35 @@ def optimize_resume_task(self, job_id: str):
             _sync_user_job_counts(job_id, "failed")
             _store_error_log(job_id, _capture)
             logger.error(f"[optimize_resume_task] Job {job_id} failed: {result.error_message}")
-            try:
-                notify_terminal_failure_once(
-                    get_redis_client(),
-                    kind="optimize_job",
-                    entity_id=str(job_id),
-                    task_name="optimize_resume_task",
-                    error_message=str(result.error_message or "Optimization failed"),
-                    queue=settings.celery_queue_name,
-                    company_name=company_name,
-                    passes_done=result.passes_done,
-                    status_source="optimizer_result",
-                    extra_fields=_optimizer_alert_fields(result),
-                    dedupe_fingerprint=_alert_fingerprint(
-                        "optimize_job",
-                        (job or {}).get("user_id") if job else "",
-                        resume_latex,
-                        job_description,
-                        result.error_message or "Optimization failed",
-                    ),
+            inherent_no_fit = bool((result.diagnostics or {}).get("content_fit_failure"))
+            if not inherent_no_fit:
+                try:
+                    notify_terminal_failure_once(
+                        get_redis_client(),
+                        kind="optimize_job",
+                        entity_id=str(job_id),
+                        task_name="optimize_resume_task",
+                        error_message=str(result.error_message or "Optimization failed"),
+                        queue=settings.celery_queue_name,
+                        company_name=company_name,
+                        passes_done=result.passes_done,
+                        status_source="optimizer_result",
+                        extra_fields=_optimizer_alert_fields(result),
+                        dedupe_fingerprint=_alert_fingerprint(
+                            "optimize_job",
+                            (job or {}).get("user_id") if job else "",
+                            resume_latex,
+                            job_description,
+                            result.error_message or "Optimization failed",
+                        ),
+                    )
+                except Exception:
+                    pass
+            else:
+                logger.info(
+                    f"[optimize_resume_task] Job {job_id} failed but terminal alert suppressed: "
+                    f"resume inherently exceeds target page count (baseline_over_target)"
                 )
-            except Exception:
-                pass
             _terminal_status = "failed"
 
     except (TimeLimitExceeded, SoftTimeLimitExceeded) as e:

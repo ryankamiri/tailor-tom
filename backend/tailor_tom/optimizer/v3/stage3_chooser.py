@@ -609,6 +609,7 @@ def apply_and_verify(
     choices: dict[int, str],
     option_id_to_latex: dict[str, str],
     target_pages: int,
+    baseline_over_target: bool = False,
 ) -> tuple[bool, str, Optional[bytes], int, bool, str, str, dict[int, str], list[int], dict]:
     """Apply choices, compile, run quality check.
     Returns:
@@ -636,6 +637,27 @@ def apply_and_verify(
     if not compiled or quality is None:
         return False, compile_err, None, 0, False, "", final_latex, effective_choices, dropped_bullet_ids, {"attempted": False, "success": False}
     fallback_meta = {"attempted": False, "success": False, "reverted_bullet_ids": [], "attempts": []}
+    if not quality.passes and baseline_over_target and quality.page_count > target_pages:
+        # The original resume already exceeds the target page count and has no long
+        # bullets to trim, so reverting changed bullets can only move the document
+        # toward the already-over-target baseline. Only short-circuit when the failure
+        # is the page overflow itself: a long-bullet-only failure (page count fits) is
+        # still recoverable by reverting the offending edit, so fall through to it.
+        # Skip the revert fallback and surface a clear content-fit failure instead of
+        # wasting compile cycles.
+        reason = f"Resume content exceeds {target_pages} page(s); cannot fit target without cutting content."
+        return (
+            True,
+            "",
+            pdf_bytes,
+            page_count,
+            False,
+            reason,
+            final_latex,
+            effective_choices,
+            dropped_bullet_ids,
+            {"attempted": False, "success": False, "reverted_bullet_ids": [], "attempts": [], "skipped_reason": "baseline_over_target"},
+        )
     if not quality.passes:
         (
             fallback_success,

@@ -118,9 +118,14 @@ def optimize_resume_v3(
             diagnostics={"stage": "stage0", "error": s0.error_message},
         )
     baseline_diagnostics, baseline_quality = _baseline_quality_diagnostics(s0, target_pages)
+    baseline_over_target = (
+        (baseline_diagnostics.get("baseline_page_count") or 0) > target_pages
+        and (baseline_diagnostics.get("baseline_long_bullet_count") or 0) == 0
+    )
     if s0.no_eligible:
         diag: dict = {"stage": "stage0", "no_eligible": True, "k": 0}
         diag.update(baseline_diagnostics)
+        diag["baseline_over_target"] = baseline_over_target
         if getattr(s0, "stage0_diagnostics", None):
             diag.update(s0.stage0_diagnostics)
             diag["dropped_for_mapping_count"] = (
@@ -134,6 +139,14 @@ def optimize_resume_v3(
         diag["mapping_integrity_passed"] = True
         quality_passes = baseline_quality.passes if baseline_quality is not None else True
         quality_issues = baseline_quality.issues_summary if baseline_quality is not None else ""
+        # Inherent content-fit failure: baseline already exceeds target with no long
+        # bullets to trim, and there are no eligible bullets to optimize. Surface the
+        # same clear message as the stage3 short-circuit and mark it so the worker can
+        # suppress the terminal ops alert (this is not an infra failure).
+        content_fit_failure = bool(not quality_passes and baseline_over_target)
+        if content_fit_failure:
+            quality_issues = f"Resume content exceeds {target_pages} page(s); cannot fit target without cutting content."
+        diag["content_fit_failure"] = content_fit_failure
         return V3OptimizationResult(
             success=quality_passes,
             optimized_latex=resume_latex,
@@ -166,6 +179,8 @@ def optimize_resume_v3(
     diagnostics: dict = {
         "k": len(bullets),
         **baseline_diagnostics,
+        "baseline_over_target": baseline_over_target,
+        "content_fit_failure": False,
         "pass1_reason_histogram_by_iter": [],
         "pass2_reason_histogram_by_iter": [],
         "rejection_reasons_by_bullet": {},
@@ -397,6 +412,7 @@ def optimize_resume_v3(
         choices,
         option_id_to_latex,
         target_pages,
+        baseline_over_target=baseline_over_target,
     )
 
     if not success:
@@ -427,6 +443,14 @@ def optimize_resume_v3(
     diagnostics["stage3_dropped_bullet_ids"] = dropped_bullet_ids
     diagnostics["stage3_dropped_bullet_count"] = len(dropped_bullet_ids)
     diagnostics["stage3_quality_fallback"] = quality_fallback
+    # Only a genuine inherent content-fit failure (the stage3 short-circuit actually
+    # fired) should suppress the worker's terminal alert. Every other success=False
+    # path returns earlier with content_fit_failure=False so real infra failures
+    # (API-key/chooser/ownership/compile errors) still page ops.
+    diagnostics["content_fit_failure"] = bool(
+        isinstance(quality_fallback, dict)
+        and quality_fallback.get("skipped_reason") == "baseline_over_target"
+    )
     diagnostics["fallback_filled_bullet_ids"] = chooser_result.missing_filled_bullet_ids
     changed_bullet_count = sum(1 for bid, oid in effective_choices.items() if oid != f"b{bid}_orig")
     diagnostics["changed_bullet_count"] = changed_bullet_count
